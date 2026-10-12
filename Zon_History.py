@@ -114,9 +114,17 @@ def KNMI_Get_Q_T ( Start, Einde, Station = "Volkel" ) :
 # ********************************************************************"""
 @st.cache_data # Zorgt ervoor dat Streamlit het bestand onthoudt en niet bij elke klik opnieuw downloadt
 def KNMI_Get_QT_Year ( Year, WeerStation = "Volkel" ) :
-  Start = "%i-01-01" % Year
-  Einde = "%i-12-31" % Year
-  DF    = KNMI_Get_QT ( Start, Einde, Station = WeerStation )
+  Start    = "%i-01-01" % Year
+  Einde    = "%i-12-31" % Year
+  Filename = "KNMI_QT_%i_%s.csv" % ( Year, WeerStation )
+  if os.path.exists ( Filename ) :
+    DF = pd.read_csv ( Filename, sep=';'
+                      ,index_col   = 0       # Maakt van de eerste kolom (de tijd) de officiële index
+                      ,parse_dates = True )  # Zorgt dat pandas snapt dat het om datums en tijden gaat
+  else : 
+    DF = KNMI_Get_QT ( Start, Einde, Station = WeerStation )
+    DF.to_csv ( Filename, sep=';')
+
   return DF
 
 @st.cache_data # Zorgt ervoor dat Streamlit het bestand onthoudt en niet bij elke klik opnieuw downloadt
@@ -165,7 +173,7 @@ def KNMI_Get_QT ( Start, Einde, Station = "Volkel" ) :
   # Selecteer het gewenste tijdblok
   # ***********************************************************
   #Data = Data [ ( Data.index >= Start ) & ( Data.index < Einde_dt ) ]
-
+  
   return Data
 
 
@@ -400,7 +408,11 @@ def Get_Uur_QT_Bestand ( Year, Month
 # ***********************************************************************
 def Add_Uur_PV ( df, PV_Wp, Orientatie, Helling ) :
   """
-  Berekent de PV-opbrengst per uur op basis van richting, helling en totaal Wattpiek.
+  Berekent de PV-opbrengst pe  df = pd.read_csv ( Filename, sep=';'
+                      ,index_col   = 0       # Maakt van de eerste kolom (de tijd) de officiële index
+                      ,parse_dates = True )  # Zorgt dat pandas snapt dat het om datums en tijden gaat
+   
+r uur op basis van richting, helling en totaal Wattpiek.
   Richting opties: 'Oost', 'Zuid-Oost', 'Zuid', 'Zuid-West', 'West'
   Helling opties: 15, 35, 45
   """
@@ -489,7 +501,7 @@ def Calc_Month_Elektra ( DF_Year
                         ,PV_Wp          = 0
                         ,Warmtepomp_kWh = 0
                         ,Accu_kWh       = 0
-                        ,Accu_RTE       = 0
+                        ,Accu_RTE       = 0.9
                         ,Orientatie     = "Zuid"
                         ,Helling        = 35
                         ,Force_Rebuild  = False
