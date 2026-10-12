@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Version 1.1   6-10-2026
-  - Lay out, alle componenten aanqwezig
+Version = 1.2   # 10-10-2025     saved: St_Warmtepomp_27_v1.2.py
+  -
   
-Version 0.9 - DEEL 1 - Fix voor printen, tabel-zichtbaarheid en balk-nulpunt
+Version = 1.1   # 10-10-2026    saved: St_Warmtepomp_26_v1.1.py
+  - Lay out, alle componenten aanwezig
+  - getest op streamlit cloud
+  
+Version = 0.9   # - DEEL 1 - Fix voor printen, tabel-zichtbaarheid en balk-nulpunt
 """
-version = 1.1
+Version = 1.3   # 10-10-2025
 
 import os
 from   datetime          import datetime, timedelta
@@ -15,9 +19,22 @@ import pandas            as pd
 import plotly.express    as px
 import requests
 
+# *****************************************************************************
+# MOET ANDERS
+# *****************************************************************************
+#from   GraadDagen_PVopbrengst import *
+from   GraadDagen_PVopbrengst import EnergieSoort
+from   Zon_History            import KNMI_Get_QT_Year
+# *****************************************************************************
+# *****************************************************************************
 
+
+
+
+# *****************************************************************************
+# *****************************************************************************
 # 1. INITIALISEER DE CONFIGURATIE EN DWING LICHT THEMA AF VOOR STABIELE PRINTS
-st.set_page_config(
+st.set_page_config (
   layout                = "wide", 
   page_title            = "Energie Dashboard", 
   page_icon             = "⚡",
@@ -31,18 +48,18 @@ if "init_verbruik" not in st.session_state :
     "Elektra Afname [kWh]"       : 1900, 
     "TerugLevering [kWh]"        : 1700,
     "PV Opbrengst [kWh]"         : 2800, 
+    "Verbruik augustus [kWh]"    : 172, 
     "Capaciteit ThuisAccu [kWh]" : 0,
-    "Zonneboiler [kWh]"          : 0, 
     "Elektrische Auto [kWh]"     : 0
   }
 
 if "init_vast" not in st.session_state :
   st.session_state.init_vast = {
-    "Leen Rente"                 : 5.2, 
-    "Spaar Rente"                : 2.1, 
-    "Vastrecht Elektra"          : 456, 
-    "Vastrecht_Gas"              : 200, 
-    "Teruggave EnergieBelasting" : 635
+    "Leen Rente [%]"                 : 5.2, 
+    "Spaar Rente [%]"                : 2.1, 
+    "Vastrecht Elektra [€]"          : 456, 
+    "Vastrecht Gas [€]"              : 200, 
+    "Teruggave EnergieBelasting [€]" : 635
   }
 
 if "init_wp" not in st.session_state :
@@ -52,156 +69,120 @@ if "init_wp" not in st.session_state :
        "OnderhoudsKosten [€]", 
        "Aanschaf Jaar", 
        "Levensduur [jaren]", 
-       "SCOP", 
+       "SCOP (factor)", 
        "Aandeel Verwarming [%]" ],
     "CV" : [  2000, 100, 2024, 15, 1.0,   0 ],   
-    "WP1": [  4500, 100, 2024, 15, 4.5,  60 ],  
+    "WP1": [ 12000, 100, 2024, 15, 5.0, 100 ], 
     "WP2": [  6000, 100, 2024, 15, 4.0,  80 ],  
-    "WP3": [ 12000, 100, 2024, 15, 5.0, 100 ], 
+    "WP3": [  4500, 100, 2024, 15, 4.5,  60 ],  
   }
 
 
-# *****************************************************************************
-# Haalt uurgegevens Temperatuur en Zon-Instraling 
-# over de geselecteerde periode bij het KNMI
-#   (simpele versie afgeleid van Get_KNMI_Uur_Data)
-# *****************************************************************************
-@st.cache_data # Zorgt ervoor dat Streamlit het bestand onthoudt en niet bij elke klik opnieuw downloadt
-def Get_KNMI_Uur_QT ( Jaar, Station = 375 ) :
-  URL   = 'https://www.daggegevens.knmi.nl/klimatologie/uurgegevens'
-  Start = f"{Jaar}0101"
-  End   = f"{Jaar+1}0101"
-  Pars  = { 'start': Start,
-            'end'  : End,
-            'vars' : "T:Q",
-            'stns' : Station,
-            'fmt'  : "json"
-          }
-  Response = requests.post ( URL, data = Pars )    
-  Data     = pd.DataFrame ( Response.json() )
-  
-  # ***********************************************************
-  # Strip timezone information from datetime
-  # ***********************************************************
-  def Calc_date ( Row ):
-    return Row.date [:10].replace ( '-', '' )
-  Data [ "date" ] = Data.apply ( lambda row: Calc_date ( row ), axis=1 )
-
-  Data = Data.rename ( columns = { "date" : "YYYYMMDD",
-                                   "T"    : "Temp",
-                                   "Q"    : "Zon_Wh",
-                                 } )
-  Data.drop ( columns = [ "station_code" ], inplace=True )
-
-  # ***********************************************************
-  # Set index
-  # ***********************************************************
-  def Calc_DateTime ( Row ) :
-    Result = datetime.strptime ( str( int ( Row.YYYYMMDD ) ), "%Y%m%d")
-    return Result + timedelta ( hours = Row.hour-1 )
-  # ***********************************************************
-  Data [ "DateTime" ] = Data.apply ( lambda row: Calc_DateTime ( row ), axis=1 )
-  Data.set_index ( "DateTime", inplace=True )
-  Data.drop ( columns = "YYYYMMDD,hour".split(','), inplace=True )
-
-  # ***********************************************************
-  # Selecteer het gewenste tijdblok
-  # ***********************************************************
-  Data = Data [ ( Data.index >= Start ) & ( Data.index < End ) ]
- 
-  # ***********************************************************
-  # Converteer Values
-  # ***********************************************************
-  Data [ "Zon_Wh" ] =       Data [ "Zon_Wh" ] / 0.360
-  Data [ "Temp"   ] = 0.1 * Data [ "Temp"   ]
-
-  return Data
-
-
 # ****************************************************************************
 # ****************************************************************************
-class EnergieModel:
-  def __init__(self):
-      pass
+class EnergieModel :
+  def __init__ ( self ) :
+    pass
       
-  # **************************************************************************
-  # **************************************************************************
-  def get_value_verbruik(self, item):
-      if "editor_verbruik" in st.session_state and "edited_rows" in st.session_state.editor_verbruik:
-          edited = st.session_state.editor_verbruik["edited_rows"]
-          keys = list(st.session_state.init_verbruik.keys())
-          for idx, changes in edited.items():
-              if keys[idx] == item and "Waarde" in changes:
-                  return changes["Waarde"]
-      return st.session_state.init_verbruik[item]
+  # ************************************************************
+  # ************************************************************
+  def get_value_verbruik ( self, item ) :
+    if "editor_verbruik" in st.session_state and\
+       "edited_rows"     in st.session_state.editor_verbruik :
+      edited = st.session_state.editor_verbruik [ "edited_rows" ]
+      keys = list(st.session_state.init_verbruik.keys () )
+      for idx, changes in edited.items () :
+        if keys [ idx ] == item and "Waarde" in changes :
+          return changes [ "Waarde" ]
+    return st.session_state.init_verbruik [ item ]
 
-  # **************************************************************************
-  # **************************************************************************
-  def create_sliders(self):
-      col_1, col_2 = st.columns(2)
-      
-      # Check of er zojuist een JSON-bestand is ingeladen, anders pakken we de standaardwaarden
-      sl_load = st.session_state.get("load_sliders", {})
-      
-      with col_1:
-          self.sl_elek_prijs = st.slider("Elektra Prijs (ct)", 10, 50, int(sl_load.get("elek_prijs", 31))) / 100
-          self.sl_elek_delta = st.slider("Elektra Jaarlijkse Stijging (%)", 0, 10, int(sl_load.get("elek_delta", 2))) / 100  
-          self.sl_terug_prijs = st.slider("Terug Prijs (ct)", 10, 50, int(sl_load.get("terug_prijs", 30))) / 100
-      with col_2:
-          self.sl_gas_prijs = st.slider("Gas Prijs (ct)", 50, 300, int(sl_load.get("gas_prijs", 168))) / 100
-          self.sl_gas_delta = st.slider("Gas Jaarlijkse Stijging (%)", 0, 10, int(sl_load.get("gas_delta", 3))) / 100      
-          self.sl_jaren     = st.slider("EvaluatiePeriode (Jaren)", 1, 30, int(sl_load.get("jaren", 10)))
-
-
-  # **************************************************************************
-  # **************************************************************************
-  def get_value_vast(self, item):
-      if "editor_vast" in st.session_state and "edited_rows" in st.session_state.editor_vast:
-          edited = st.session_state.editor_vast["edited_rows"]
-          keys = list(st.session_state.init_vast.keys())
-          for idx, changes in edited.items():
-              if keys[idx] == item and "Waarde" in changes:
-                  return changes["Waarde"]
-      return st.session_state.init_vast[item]
-
-  # **************************************************************************
-  # **************************************************************************
-  def get_value_wp(self, rij, sys):
-      if "editor_wp" in st.session_state and "edited_rows" in st.session_state.editor_wp:
-          edited = st.session_state.editor_wp["edited_rows"]
-          rijen = st.session_state.init_wp["Installatie"]
-          for idx, col_changes in edited.items():
-              if rijen[idx] == rij and sys in col_changes:
-                  return col_changes[sys]
-      rijen = st.session_state.init_wp["Installatie"]
-      row_idx = rijen.index(rij)
-      return st.session_state.init_wp[sys][row_idx]
-
-  # **************************************************************************
-  # **************************************************************************
-  def create_table_energie_verbruik(self):
-      df = pd.DataFrame({"Waarde": st.session_state.init_verbruik})
-      df.index.name = "Energie Verbruik"
-      kolom_instellingen = {"Waarde": st.column_config.NumberColumn(alignment="center")}
-      st.data_editor(df, width="stretch", num_rows="dynamic", column_config=kolom_instellingen, key="editor_verbruik")    
-      
-  # **************************************************************************
-  # **************************************************************************
-  def create_table_vaste_kosten(self):    
-      df = pd.DataFrame({"Waarde": st.session_state.init_vast})
-      df.index.name = "Vaste Kosten"
-      kolom_instellingen = {"Waarde": st.column_config.NumberColumn(alignment="center")}
-      st.data_editor(df, width="stretch", num_rows="dynamic", column_config=kolom_instellingen, key="editor_vast")    
-
-  # **************************************************************************
-  # **************************************************************************
-  def create_table_installatie(self):
-      df = pd.DataFrame(st.session_state.init_wp).set_index("Installatie")
-      kolom_instellingen = {col: st.column_config.NumberColumn(alignment="center") for col in ["CV", "WP1", "WP2", "WP3"]}
-      st.data_editor(df, width="stretch", num_rows="dynamic", column_config=kolom_instellingen, key="editor_wp")
+  # ************************************************************
+  # ************************************************************
+  def create_sliders ( self ) :
+    col_1, col_2 = st.columns ( 2 )
     
-  # **************************************************************************
-  # **************************************************************************
+    # Check of er zojuist een JSON-bestand is ingeladen, anders pakken we de standaardwaarden
+    sl_load = st.session_state.get ( "load_sliders", {} )
+    
+    with col_1 :
+      self.sl_elek_prijs  = st.slider ( "Elektra Prijs (ct)"             ,10, 50, int ( sl_load.get ( "elek_prijs" , 31 ))) / 100
+      self.sl_elek_delta  = st.slider ( "Elektra Jaarlijkse Stijging (%)", 0, 10, int ( sl_load.get ( "elek_delta" , 2  ))) / 100  
+      self.sl_terug_prijs = st.slider ( "Terug Prijs (ct)"               ,10, 50, int ( sl_load.get ( "terug_prijs", 30 ))) / 100
+    with col_2 :
+      self.sl_gas_prijs = st.slider ( "Gas Prijs (ct)"            , 50, 300, int ( sl_load.get ( "gas_prijs", 168 ))) / 100
+      self.sl_gas_delta = st.slider ( "Gas Jaarlijkse Stijging (%)", 0,  10, int ( sl_load.get ( "gas_delta",   3 ))) / 100      
+      self.sl_jaren     = st.slider ( "EvaluatiePeriode (Jaren)"   , 1,  30, int ( sl_load.get ( "jaren"    ,  10 )))
+
+
+  # ************************************************************
+  # ************************************************************
+  def get_value_vast ( self, item ) :
+    if "editor_vast" in st.session_state and \
+       "edited_rows" in st.session_state.editor_vast :
+      edited = st.session_state.editor_vast [ "edited_rows" ]
+      keys   = list ( st.session_state.init_vast.keys () )
+      for idx, changes in edited.items () :
+        if keys [ idx ] == item and "Waarde" in changes :
+          return changes [ "Waarde" ]
+    return st.session_state.init_vast [ item ]
+
+  # ************************************************************
+  # ************************************************************
+  def get_value_wp ( self, rij, sys ) :
+    if "editor_wp"   in st.session_state and \
+       "edited_rows" in st.session_state.editor_wp :
+      edited = st.session_state.editor_wp [ "edited_rows" ]
+      rijen = st.session_state.init_wp [ "Installatie" ]
+      for idx, col_changes in edited.items() :
+        if rijen [ idx ] == rij and sys in col_changes :
+          return col_changes [ sys ]
+    rijen = st.session_state.init_wp [ "Installatie" ]
+    row_idx = rijen.index ( rij )
+    return st.session_state.init_wp [ sys ][ row_idx ]
+
+  # ************************************************************
+  # ************************************************************
+  def create_table_energie_verbruik ( self ) :
+    df                 = pd.DataFrame ( { "Waarde": st.session_state.init_verbruik } )
+    df.index.name      = "Energie Verbruik"
+    kolom_instellingen = { "Waarde": st.column_config.NumberColumn(alignment="center" ) }
+    st.data_editor ( df, 
+                     width         = "stretch", 
+                     num_rows      = "fixed", 
+                     disabled      = ["_index"], # Zorgt dat de eerste kolom (de index) NIET editable is
+                     column_config = kolom_instellingen, 
+                     key           = "editor_verbruik")    
+       
+  # ************************************************************
+  # ************************************************************
+  def create_table_vaste_kosten ( self ) :    
+    df                 = pd.DataFrame ( { "Waarde": st.session_state.init_vast } )
+    df.index.name      = "Vaste Kosten"
+    kolom_instellingen = { "Waarde": st.column_config.NumberColumn(alignment = "center" ) }
+    st.data_editor ( df, 
+                     width         ="stretch", 
+                     num_rows      ="fixed", 
+                     disabled      = ["_index"],
+                     column_config = kolom_instellingen, 
+                     key           = "editor_vast" )    
+
+  # ************************************************************
+  # ************************************************************
+  def create_table_installatie ( self ) :
+    df                 = pd.DataFrame ( st.session_state.init_wp ).set_index ( "Installatie" )
+    #kolom_instellingen = { col: st.column_config.NumberColumn ( alignment="center" ) \
+    #                       for col in [ "CV", "WP1", "WP2", "WP3" ]}
+    kolom_instellingen = { sys: st.column_config.NumberColumn ( alignment="center" ) \
+                           for sys in [ "CV", "WP1", "WP2", "WP3" ]}
+    st.data_editor ( df, 
+                     width         = "stretch", 
+                     num_rows      = "fixed", 
+                     disabled      = ["_index"],
+                     column_config = kolom_instellingen, 
+                     key           = "editor_wp" )
+    
+  # ************************************************************
+  # ************************************************************
   def create_PV_Opwek ( self ) :
     # --- VOORBEELD HOE JE DIT TOEPAST ---
     #st.title("☀️ Zon Wh")
@@ -216,35 +197,38 @@ class EnergieModel:
                       ,"Groningen"  : 280
                       ,"Vlissingen" : 310 
                      }
-    gekozen_station = st.selectbox("Kies een KNMI Weerstation", list(station_opties.keys()))
+    self.KNMI_Station = st.selectbox ( "Kies een KNMI Weerstation", list ( station_opties.keys() ))
+    KNMI_Get_QT_Year ( 2024, WeerStation = self.KNMI_Station )
     
-    with st.spinner("KNMI data over 8760 uren wordt opgehaald..."):
-        #df_weer = download_knmi_uurgegevens_json(jaar=2025, station=station_opties[gekozen_station])
-        df_weer = Get_KNMI_Uur_QT ( 2025, Station=station_opties [ gekozen_station ] )
+    #with st.spinner ( "KNMI data over 8760 uren wordt opgehaald..." ) :
+      #df_weer = download_knmi_uurgegevens_json(jaar=2025, station=station_opties[gekozen_station])
+      #df_weer = Get_KNMI_Uur_QT ( 2025, Station=station_opties [ self.KNMI_Station ] )
+      #KNMI_Get_QT_Year ( 2024, WeerStation = "Volkel" ) :
+    
+    st.space ( size = 5 ) #"medium" )  om niet met popup van table eronder in de knoop te komen
 
     #st.success(f"Succesvol {len(df_weer)} uren aan data ingeladen!")
     #st.dataframe(df_weer.head(10), width="stretch")
 
-  # **************************************************************************
-  # **************************************************************************
+  # ************************************************************
+  # ************************************************************
   def run_calculations ( self ) :
-    gas_verbruik        = self.get_value_verbruik("Gas [m3]")
-    vastrecht_gas       = self.get_value_vast("Vastrecht_Gas")
-    teruggave_belasting = self.get_value_vast("Teruggave EnergieBelasting")
-    
-    aanschaf_prijs_cv   = self.get_value_wp("Aanschaf Prijs [€]", "CV")
-    levensduur_cv       = self.get_value_wp("Levensduur [jaren]", "CV")
-    onderhoud_cv        = self.get_value_wp("OnderhoudsKosten [€]", "CV")
+    gas_verbruik        = self.get_value_verbruik ( "Gas [m3]" )
+    vastrecht_gas       = self.get_value_vast     ( "Vastrecht Gas [€]" )
+    teruggave_belasting = self.get_value_vast     ( "Teruggave EnergieBelasting [€]" )
+    aanschaf_prijs_cv   = self.get_value_wp       ( "Aanschaf Prijs [€]", "CV" )
+    levensduur_cv       = self.get_value_wp       ( "Levensduur [jaren]", "CV" )
+    onderhoud_cv        = self.get_value_wp       ( "OnderhoudsKosten [€]", "CV" )
     
     self.kosten_overzicht = {}
     systemen = [ "CV", "WP1", "WP2", "WP3" ]
     
     for sys in systemen :
-      aanschaf_prijs = self.get_value_wp("Aanschaf Prijs [€]", sys)
-      levensduur     = self.get_value_wp("Levensduur [jaren]", sys)
-      onderhoud      = self.get_value_wp("OnderhoudsKosten [€]", sys)
-      scop           = self.get_value_wp("SCOP", sys)
-      aandeel        = self.get_value_wp("Aandeel Verwarming [%]", sys) / 100 
+      aanschaf_prijs = self.get_value_wp ( "Aanschaf Prijs [€]", sys )
+      levensduur     = self.get_value_wp ( "Levensduur [jaren]", sys )
+      onderhoud      = self.get_value_wp ( "OnderhoudsKosten [€]", sys )
+      scop           = self.get_value_wp ( "SCOP (factor)", sys )
+      aandeel        = self.get_value_wp ( "Aandeel Verwarming [%]", sys ) / 100 
       
       # Bruto aanschafkosten (altijd positief vanaf 0)
       aanschaf_jaarlijks = aanschaf_prijs / levensduur
@@ -263,8 +247,8 @@ class EnergieModel:
       # Bruto verbruikskosten
       totaal_verbruik = 0.0
       for j in range(self.sl_jaren):
-        actuele_gasprijs = self.sl_gas_prijs * ((1 + self.sl_gas_delta) ** j)
-        actuele_elekprijs = self.sl_elek_prijs * ((1 + self.sl_elek_delta) ** j)
+        actuele_gasprijs  = self.sl_gas_prijs  * (( 1 + self.sl_gas_delta  ) ** j)
+        actuele_elekprijs = self.sl_elek_prijs * (( 1 + self.sl_elek_delta ) ** j)
         
         gas_deel = (1 - aandeel) * gas_verbruik * actuele_gasprijs
         if scop > 0:
@@ -282,27 +266,52 @@ class EnergieModel:
       netto_totaal = bruto_totaal
       
       self.kosten_overzicht[sys] = {
-        "Aanschaf": totaal_aanschaf,
-        "Vaste Kosten": totaal_vaste_kosten,
-        "Verbruik": totaal_verbruik,
-        "Korting Belasting": totaal_korting_belasting,
-        "Totaal": netto_totaal
+        "Aanschaf"          : totaal_aanschaf,
+        "Vaste Kosten"      : totaal_vaste_kosten,
+        "Verbruik"          : totaal_verbruik,
+        "Korting Belasting" : totaal_korting_belasting,
+        "Totaal"            : netto_totaal
       }
+      
+      self.Calc_PV ()
+
       #print ( "Gas=%i  GasDeel=%i   EDeel=%i" % ( 
       #  gas_verbruik, gas_deel, elek_deel ) )
       
     #print ( "Calculations ran" )
       
-      
-      
 
-  # **************************************************************************
-  # **************************************************************************
+
+  # ************************************************************
+  # ************************************************************
+  def Calc_PV ( self ) : 
+    Year          = 2024
+    kWh_per_Wp    = 0.94
+    #E_Base_kWh_pm = 172   # Stef augustus-2024
+
+    #Gas_m3        = self.get_value_verbruik ( "Gas [m3]" )
+    PV_kWh        = self.get_value_verbruik ( "PV Opbrengst [kWh]" )
+    E_Afname_kWh  = self.get_value_verbruik ( "Elektra Afname [kWh]" )
+    E_Terug_kWh   = self.get_value_verbruik ( "TerugLevering [kWh]" )
+    E_Base_kWh_pm = self.get_value_verbruik ( "Verbruik augustus [kWh]" )
+    
+
+    Elektra = EnergieSoort ( "Elektra", E_Afname_kWh, E_Terug_kWh, PV_kWh=PV_kWh,
+                            kWh_per_Wp = kWh_per_Wp )
+    Elektra.Set_Base_pm ( E_Base_kWh_pm )           
+    Elektra.Add_KNMI_WP_Accu ( Year, Warmtepomp_kWh = 0   , Do_Print=True )
+    Elektra.Add_KNMI_WP_Accu ( Year, Warmtepomp_kWh = 1000, Do_Print=True )
+  
+
+
+
+  # ************************************************************
+  # ************************************************************
   def create_table_output ( self ) :
     data_items = [ "Kosten per Maand avg [€]", 
                    "Kosten per Jaar avg [€]", 
-                   "Kosten over EvaluatiePeriode [€]"]
-    df_output = pd.DataFrame({
+                   "Kosten over EvaluatiePeriode [€]" ]
+    df_output = pd.DataFrame ( {
       "Resultaat": data_items,
       "CV":  [
         int(self.kosten_overzicht["CV"]["Totaal"] / self.sl_jaren / 12),
@@ -325,402 +334,422 @@ class EnergieModel:
         int(self.kosten_overzicht["WP3"]["Totaal"])
       ],
     })    
-    kolom_instellingen = {col: st.column_config.NumberColumn(alignment="center") for col in ["CV", "WP1", "WP2", "WP3"]}
-    st.dataframe(df_output, width="stretch", hide_index=True, column_config=kolom_instellingen)
+    kolom_instellingen = { col : st.column_config.NumberColumn ( alignment="center" ) \
+                          for col in [ "CV", "WP1", "WP2", "WP3" ] }
+    st.dataframe ( df_output, width = "stretch", hide_index = True, column_config = kolom_instellingen )
 
-  # **************************************************************************
-  # **************************************************************************
-  def create_chart(self):
-      chart_rows = []
-      for sys, posten in self.kosten_overzicht.items():
-          for kosten_type in ["Aanschaf", "Vaste Kosten", "Verbruik"]:
-              chart_rows.append({
-                  "Installatie": sys,
-                  "Type Kosten": kosten_type,
-                  "Bedrag (€)": posten[kosten_type]
-              })
-      self.df_grafiek_laatste = pd.DataFrame(chart_rows) # Onthoud de data voor de PDF
+  # ************************************************************
+  # ************************************************************
+  def create_chart ( self ) :
+    chart_rows = []
+    for sys, posten in self.kosten_overzicht.items () :
+      for kosten_type in [ "Aanschaf", "Vaste Kosten", "Verbruik" ] :
+        chart_rows.append ( {
+          "Installatie" : sys,
+          "Type Kosten" : kosten_type,
+          "Bedrag (€)"  : posten [ kosten_type ]
+        } )
+    self.df_grafiek_laatste = pd.DataFrame ( chart_rows ) # Onthoud de data voor de PDF
+  
+    fig = px.bar (
+      self.df_grafiek_laatste, x = "Installatie", y = "Bedrag (€)", color = "Type Kosten", 
+      text_auto = '.2s', height = 400,
+      color_discrete_map = { "Aanschaf": "#94a3b8", "Vaste Kosten": "#38bdf8", "Verbruik": "#f43f5e" } 
+    )
     
-      fig = px.bar(
-          self.df_grafiek_laatste, x="Installatie", y="Bedrag (€)", color="Type Kosten", 
-          text_auto='.2s', height=400,
-          color_discrete_map={"Aanschaf": "#94a3b8", "Vaste Kosten": "#38bdf8", "Verbruik": "#f43f5e"} 
-      )
-      
-      fig.update_layout(
-          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-          margin=dict(l=40, r=10, t=10, b=30),
-          paper_bgcolor="rgba(0,0,0,0)",
-          plot_bgcolor="rgba(0,0,0,0)",
-          font=dict(color="#000000")
-      )
-      
-      fig.update_xaxes(title=None, showgrid=True, gridcolor="#e2e8f0", tickfont=dict(color="#000000"))
-      fig.update_yaxes(title=None, showgrid=True, gridcolor="#e2e8f0", tickfont=dict(color="#000000"))
-      
-      st.plotly_chart(fig, width="stretch")
-      
-  # **************************************************************************
-  # **************************************************************************
-  def export_to_json(self):
-      """Pakt alle actuele waarden van tabellen en sliders samen in een JSON string"""
-      import json
-      
-      # Verzamel de live waarden uit de data_editors via de helpers
-      live_verbruik = {k: self.get_value_verbruik(k) for k in st.session_state.init_verbruik.keys()}
-      live_vast = {k: self.get_value_vast(k) for k in st.session_state.init_vast.keys()}
-      
-      live_wp = {"Installatie": st.session_state.init_wp["Installatie"]}
-      for sys in ["CV", "WP1", "WP2", "WP3"]:
-          live_wp[sys] = [self.get_value_wp(rij, sys) for rij in st.session_state.init_wp["Installatie"]]
-
-      # Voeg alles samen in één groot instellingen-pakket
-      instellingen = {
-          "verbruik": live_verbruik,
-          "vast": live_vast,
-          "wp": live_wp,
-          "sliders": {
-              "elek_prijs": self.sl_elek_prijs * 100, # Terug naar centen voor de sliders
-              "elek_delta": self.sl_elek_delta * 100,
-              "terug_prijs": self.sl_terug_prijs * 100,
-              "gas_prijs": self.sl_gas_prijs * 100,
-              "gas_delta": self.sl_gas_delta * 100,
-              "jaren": self.sl_jaren
-          }
+    fig.update_layout(
+      legend        = dict ( orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1 ),
+      margin        = dict ( l=40, r=10, t=10, b=30 ),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor  = "rgba(0,0,0,0)",
+      font          = dict ( color = "#000000" )
+    )
+    
+    fig.update_xaxes ( title = None, showgrid = True, gridcolor = "#e2e8f0", tickfont = dict ( color ="#000000" ) )
+    fig.update_yaxes ( title = None, showgrid = True, gridcolor = "#e2e8f0", tickfont = dict ( color ="#000000" ) )
+    
+    #st.plotly_chart ( fig, 
+    #                  use_container_width = True, 
+    #                  config = {"displayModeBar": False }
+    #                )
+    
+    # 1. Blokkeer zoomen en slepen op de assen in de layout van de figuur
+    fig.update_layout (
+      xaxis    = dict ( fixedrange = True ), # Voorkomt zoomen/slepen op de X-as
+      yaxis    = dict ( fixedrange = True ), # Voorkomt zoomen/slepen op de Y-as
+      dragmode = False               # Schakelt de sleep-modus volledig uit
+    )
+    
+    # 2. Toon de grafiek zonder menubalk en zet de interactie op 'fixed'
+    st.plotly_chart (
+      fig, 
+      #use_container_width = True,
+      width  = "stretch",             
+      config = {
+          "displayModeBar" : False, # Verbergt het menu rechtsboven
+          "scrollZoom"     : False      # Voorkomt zoomen met het muiswiel
       }
-      # Zet om naar nette JSON tekst met inspringing
-      return json.dumps(instellingen, indent=4)
+    )
 
-  # **************************************************************************
-  # **************************************************************************
-  def import_from_json(self, json_bestand):
-      """Laadt een geüpload JSON bestand en overschrijft de session state"""
-      import json
-      try:
-          data = json.load(json_bestand)
-          
-          # Overschrijf de basis data in session state
-          st.session_state.init_verbruik = data["verbruik"]
-          st.session_state.init_vast = data["vast"]
-          st.session_state.init_wp = data["wp"]
-          
-          # Sla de slider-waarden op in session state zodat de sliders deze overnemen
-          st.session_state.load_sliders = data["sliders"]
-          
-          # Forceer Streamlit om de pagina direct te vernieuwen met de nieuwe data
-          st.rerun()
-      except Exception as e:
-          st.error(f"Fout bij het laden van het JSON-bestand: {e}")
+  
+  # ************************************************************
+  # ************************************************************
+  def export_to_json ( self ) :
+    """Pakt alle actuele waarden van tabellen en sliders samen in een JSON string"""
+    import json
+    
+    # Verzamel de live waarden uit de data_editors via de helpers
+    live_verbruik = { k: self.get_value_verbruik ( k ) \
+                     for k in st.session_state.init_verbruik.keys () }
+    live_vast = { k: self.get_value_vast ( k ) \
+                 for k in st.session_state.init_vast.keys () }
+    
+    live_wp = { "Installatie" : st.session_state.init_wp [ "Installatie" ] }
+    for sys in [ "CV", "WP1", "WP2", "WP3" ] :
+      live_wp [ sys ] = [ self.get_value_wp ( rij, sys ) \
+                         for rij in st.session_state.init_wp [ "Installatie" ] ]
+
+    # Voeg alles samen in één groot instellingen-pakket
+    instellingen = {
+      "verbruik" : live_verbruik,
+      "vast"     : live_vast,
+      "wp"       : live_wp,
+      "sliders"  : {
+        "elek_prijs"  : self.sl_elek_prijs  * 100, # Terug naar centen voor de sliders
+        "elek_delta"  : self.sl_elek_delta  * 100,
+        "terug_prijs" : self.sl_terug_prijs * 100,
+        "gas_prijs"   : self.sl_gas_prijs   * 100,
+        "gas_delta"   : self.sl_gas_delta   * 100,
+        "jaren"       : self.sl_jaren
+      }
+    }
+    # Zet om naar nette JSON tekst met inspringing
+    return json.dumps ( instellingen, indent = 4 )
+
+  # ************************************************************
+  # ************************************************************
+  def import_from_json ( self, json_bestand ) :
+    """Laadt een geüpload JSON bestand en overschrijft de session state"""
+    import json
+    try:
+      data = json.load ( json_bestand )
       
-
-  # **************************************************************************
-  # **************************************************************************
-  # Voeg df_grafiek toe als expliciet argument
-  def export_to_pdf(self, pdf_verbruik, pdf_vast, pdf_wp, df_grafiek):
-      import io
-      from reportlab.lib.pagesizes import A4
-      from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-      from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-      from reportlab.lib import colors
-      from matplotlib.figure import Figure
-
-      # 1. Globale variabelen/versie veiligstellen
-      #version = getattr(self, 'version', '1.0')
-
-      # 2. Matplotlib Grafiek Genereren voor de PDF (Thread-safe & Async-proof)
-      try:
-          # GEBRUIK NU HIER DE MEEGEGEVEN df_grafiek VARIABELE:
-          df_pivot = df_grafiek.groupby(['Installatie', 'Type Kosten'])['Bedrag (€)'].sum().unstack().fillna(0)
-          
-          # Zorg dat de kolommen in de juiste volgorde staan
-          gewenste_kolommen = [col for col in ["Aanschaf", "Vaste Kosten", "Verbruik"] if col in df_pivot.columns]
-          df_pivot = df_pivot[gewenste_kolommen]
-          
-          # Exact dezelfde kleurenmatchen met je originele Plotly schermgrafiek
-          color_map = {"Aanschaf": "#94a3b8", "Vaste Kosten": "#38bdf8", "Verbruik": "#f43f5e"}
-          colors_list = [color_map.get(col, "#000000") for col in df_pivot.columns]
-          
-          fig = Figure(figsize=(6, 3.5), dpi=200)
-          ax = fig.subplots()
-          
-          # TEKEN DE GESTAPELDE GRAFIEK
-          df_pivot.plot(kind='bar', stacked=True, ax=ax, color=colors_list, width=0.6)
-          
-          # Strakke styling (aslijnen verbergen, grids aanzetten)
-          ax.spines['top'].set_visible(False)
-          ax.spines['right'].set_visible(False)
-          ax.spines['left'].set_visible(False)
-          ax.spines['bottom'].set_color('#e2e8f0')
-          ax.grid(axis='y', linestyle='-', linewidth=0.5, color='#e2e8f0')
-          ax.set_axisbelow(True)
-          ax.set_xlabel("")
-          ax.set_ylabel("")
-          
-          for tick in ax.get_xticklabels():
-              tick.set_rotation(0)
-          
-          ax.legend(loc='lower right', bbox_to_anchor=(1.0, 1.02), ncol=3, frameon=False, fontsize=8)
-          
-          img_buf = io.BytesIO()
-          fig.savefig(img_buf, format='png', bbox_inches='tight', transparent=True)
-          img_buf.seek(0)
-          chart_img_bytes = img_buf.read()
-          
-      #except Exception as e:
-      except :
-          chart_img_bytes = None
-
-
-
-      # 3. Document Setup (A4 breedte = 595pt. Marges 25+25=50pt. Beschikbare breedte = 545pt)
-      # Linkerkolom (200) + Tussenruimte (25) + Rechterkolom (320) = exact 545pt.
-      buffer = io.BytesIO()
-      doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
-      story = []
+      # Overschrijf de basis data in session state
+      st.session_state.init_verbruik = data [ "verbruik" ]
+      st.session_state.init_vast     = data [ "vast" ]
+      st.session_state.init_wp       = data [ "wp" ]
       
-      # 4. Typografie & Stijlen
-      styles = getSampleStyleSheet()
-      title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, spaceAfter=5, textColor=colors.HexColor("#0f172a"))
-      section_style = ParagraphStyle('Section', parent=styles['Heading2'], fontSize=11, spaceBefore=8, spaceAfter=4, textColor=colors.HexColor("#1e293b"))
-      normal_style = ParagraphStyle('Normal', parent=styles['Normal'], fontSize=9, leading=11, textColor=colors.HexColor("#334155"))
+      # Sla de slider-waarden op in session state zodat de sliders deze overnemen
+      st.session_state.load_sliders = data [ "sliders" ]
       
-      # Stijl voor tekst IN de tabellen (voorkomt tekst overlap bij lange zinnen)
-      table_body_style = ParagraphStyle('TableBody', parent=styles['Normal'], fontSize=9, leading=11, textColor=colors.HexColor("#1e293b"))
-      table_body_center = ParagraphStyle('TableBodyCenter', parent=table_body_style, alignment=1) # 1 = gecentreerd
+      # Forceer Streamlit om de pagina direct te vernieuwen met de nieuwe data
+      st.rerun ()
+    except Exception as e:
+      st.error ( f"Fout bij het laden van het JSON-bestand: {e}" )
+    
 
-      # NIEUW: Stijl voor het tekstblok over de volle breedte aan het einde
-      footer_block_style = ParagraphStyle(
-          'FooterBlock',
-          parent=styles['Normal'],
-          fontSize=9,
-          leading=13,
-          textColor=colors.HexColor("#1e293b"),
-          backColor=colors.HexColor("#f8fafc"),      # Lichtgrijze achtergrond
-          borderColor=colors.HexColor("#cbd5e1"),  # Dunne rand
-          borderWidth=0.5,
-          borderPadding=10,                          # Ruimte binnen het blok
-          spaceBefore=15,                            # Ruimte boven het blok
-          spaceAfter=10
-      )
+  # ************************************************************
+  # ************************************************************
+  def export_to_pdf ( self, pdf_verbruik, pdf_vast, pdf_wp, df_grafiek ) :
+    import io
+    from   reportlab.lib.pagesizes import A4
+    from   reportlab.platypus      import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    from   reportlab.lib.styles    import getSampleStyleSheet, ParagraphStyle
+    from   reportlab.lib           import colors
+    from   matplotlib.figure       import Figure
 
-
-
-      # =========================================================================
-      # 1. LOGO & HEADER TOEVOEGEN
-      # =========================================================================
-      logo_pad = "logo.png" # Zorg dat dit logo in de root van je GitHub staat
+    # ************************************************************
+    # 2. Matplotlib Grafiek Genereren voor de PDF (Thread-safe & Async-proof)
+    # ************************************************************
+    try:
+      # GEBRUIK NU HIER DE MEEGEGEVEN df_grafiek VARIABELE:
+      df_pivot = df_grafiek.groupby ( [ 'Installatie', 'Type Kosten' ] 
+                                    ) [ 'Bedrag (€)' ].sum ().unstack ().fillna ( 0 )
       
-      header_tekst = [
-          Paragraph(f"⚡ FC Warmtepomp Calculator (v{version})", title_style),
-          Paragraph(f"<b>EvaluatiePeriode:</b> {self.sl_jaren} jaar  |  <b>Gasprijs:</b> € {self.sl_gas_prijs:.2f}/m³  |  <b>Elektraprijs:</b> € {self.sl_elek_prijs:.2f}/kWh", normal_style)
-      ]
-
-      # Controleer of het logo bestaat (voorkomt crashes als het bestand ontbreekt)
-      if os.path.exists(logo_pad):
-          # Logo breedte 100pt, hoogte automatisch schalen (pas aan naar wens)
-          logo_img = Image(logo_pad, width=100, height=40) 
-          # Tabel met 2 kolommen: Titel (425pt) en Logo (120pt) = 545pt breed
-          header_tabel = Table([[header_tekst, logo_img]], colWidths=[425, 120])
-          header_tabel.setStyle(TableStyle([
-              ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-              ('ALIGN', (1, 0), (1, 0), 'RIGHT'), # Logo rechts uitlijnen
-          ]))
-          story.append(header_tabel)
-      else:
-          # Fallback als logo niet wordt gevonden
-          story.append(header_tekst[0])
-          story.append(header_tekst[1])
-
-
-      # 5. Header toevoegen
-      #story.append(Paragraph(f"⚡ FC Warmtepomp Calculator (v{version})", title_style))
-      #story.append(Paragraph(f"<b>EvaluatiePeriode:</b> {self.sl_jaren} jaar  |  <b>Gasprijs:</b> € {self.sl_gas_prijs:.2f}/m³  |  <b>Elektraprijs:</b> € {self.sl_elek_prijs:.2f}/kWh", normal_style))
-      #story.append(Spacer(1, 10))
-
-      story.append(Spacer(1, 15))
-
-
-      # Standaard tabelstijl voor een strakke look
-      base_table_style = TableStyle([
-          ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
-          ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-          ('ALIGN', (0, 0), (-1, 0), 'LEFT'),
-          ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-          ('FONTSIZE', (0, 0), (-1, 0), 9),
-          ('BOTTOMPADDING', (0, 0), (-1, 0), 5),
-          ('TOPPADDING', (0, 0), (-1, 0), 5),
-          ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-          ('FONTSIZE', (0, 1), (-1, -1), 9),
-          ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-          ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9FA")]),
-          ('LINEBELOW', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-      ])
-
-
-      # --- LINKS: VERBRUIK & VASTE KOSTEN & SLIDERS ---
-      left_flowables = []
+      # Zorg dat de kolommen in de juiste volgorde staan
+      gewenste_kolommen = [ col for col in [ "Aanschaf", "Vaste Kosten", "Verbruik" ] \
+                            if col in df_pivot.columns ]
+      df_pivot = df_pivot [ gewenste_kolommen ]
       
-      # 1. Energie Verbruik
-      left_flowables.append(Paragraph("📋 Energie Verbruik", section_style))
-      verbruik_data = [["Energie Item", "Waarde"]]
-      for k, v in pdf_verbruik.items():
-          verbruik_data.append([Paragraph(k, table_body_style), Paragraph(str(v), table_body_style)])
-      t_verbruik = Table(verbruik_data, colWidths=[130, 70])
-      t_verbruik.setStyle(base_table_style)
-      left_flowables.append(t_verbruik)
+      # Exact dezelfde kleurenmatchen met je originele Plotly schermgrafiek
+      color_map   = { "Aanschaf" : "#94a3b8", "Vaste Kosten" : "#38bdf8", "Verbruik" : "#f43f5e" }
+      colors_list = [ color_map.get ( col, "#000000" ) for col in df_pivot.columns ]
       
-      left_flowables.append(Spacer(1, 15))
+      fig = Figure ( figsize = ( 6, 3.5 ), dpi = 200 )
+      ax  = fig.subplots ()
       
-
-
-      # 2. Vaste Kosten
-      left_flowables.append(Paragraph("📋 Vaste Kosten", section_style))
-      vast_data = [["Kosten Item", "Waarde"]]
-      for k, v in pdf_vast.items():
-          vast_data.append([Paragraph(k, table_body_style), Paragraph(str(v), table_body_style)])
-      t_vast = Table(vast_data, colWidths=[130, 70])
-      t_vast.setStyle(base_table_style)
-      left_flowables.append(t_vast)
-
-      left_flowables.append(Spacer(1, 15))
-
-
-
-
-
-
-      # --- RECHTS: GRAFIEK, RESULTATEN & EIGENSCHAPPEN ---
-      right_flowables = []
+      # TEKEN DE GESTAPELDE GRAFIEK
+      df_pivot.plot ( kind = 'bar', stacked = True, ax = ax, color = colors_list, width = 0.6 )
       
-      # Grafiek
-      if chart_img_bytes:
-          right_flowables.append(Paragraph("📊 Kosten Evaluatie Grafiek", section_style))
-          right_flowables.append(Image(io.BytesIO(chart_img_bytes), width=320, height=186))
-          right_flowables.append(Spacer(1, 10))
-
-      # Gemiddelde Resultaten
-      right_flowables.append(Paragraph("📊 Gemiddelde Resultaten (Netto)", section_style))
-      output_data = [
-          ["Resultaat indicator", "CV", "WP1", "WP2", "WP3"],
-          ["Kosten / Maand avg", f"€ {int(self.kosten_overzicht['CV']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP1']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP2']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP3']['Totaal']/self.sl_jaren/12)}"],
-          ["Kosten / Jaar avg", f"€ {int(self.kosten_overzicht['CV']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP1']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP2']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP3']['Totaal']/self.sl_jaren)}"],
-          ["Netto Totaal Evaluatie", f"€ {int(self.kosten_overzicht['CV']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP1']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP2']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP3']['Totaal'])}"]
-      ]
+      # Strakke styling (aslijnen verbergen, grids aanzetten)
+      ax.spines [ 'top'    ].set_visible ( False )
+      ax.spines [ 'right'  ].set_visible ( False )
+      ax.spines [ 'left'   ].set_visible ( False )
+      ax.spines [ 'bottom' ].set_color   ( '#e2e8f0' )
+      ax.grid ( axis = 'y', linestyle = '-', linewidth = 0.5, color = '#e2e8f0' )
+      ax.set_axisbelow ( True )
+      ax.set_xlabel ( "" )
+      ax.set_ylabel ( "" )
       
-      # Omzetten naar Paragraphs voor automatische uitlijning en wrapping
-      formatted_output_data = []
-      for r_idx, row in enumerate(output_data):
-          formatted_row = []
-          for c_idx, cell in enumerate(row):
-              if r_idx == 0:
-                  formatted_row.append(cell) # Headers blijven platte tekst voor de TableStyle
-              else:
-                  style = table_body_style if c_idx == 0 else table_body_center
-                  formatted_row.append(Paragraph(cell, style))
-          formatted_output_data.append(formatted_row)
-
-      t_output = Table(formatted_output_data, colWidths=[120, 50, 50, 50, 50])
-      t_output.setStyle(base_table_style)
-      right_flowables.append(t_output)
-
-      right_flowables.append(Spacer(1, 15))
+      for tick in ax.get_xticklabels () :
+        tick.set_rotation ( 0 )
       
-      # Installatie Eigenschappen (pdf_wp)
-      right_flowables.append(Paragraph("⚙️ Installatie Eigenschappen", section_style))
-      wp_data = [["Eigenschap", "CV", "WP1", "WP2", "WP3"]]
+      ax.legend ( loc = 'lower right', bbox_to_anchor = ( 1.0, 1.02 ), 
+                 ncol = 3, frameon = False, fontsize = 8 )
       
-      rijen = pdf_wp["Installatie"]
-      for idx, rij in enumerate(rijen):
-          wp_data.append([
-              Paragraph(rij, table_body_style), 
-              Paragraph(str(pdf_wp["CV"][idx]), table_body_center), 
-              Paragraph(str(pdf_wp["WP1"][idx]), table_body_center), 
-              Paragraph(str(pdf_wp["WP2"][idx]), table_body_center), 
-              Paragraph(str(pdf_wp["WP3"][idx]), table_body_center)
-          ])
-      
-      t_wp = Table(wp_data, colWidths=[100, 55, 55, 55, 55])
-      t_wp.setStyle(base_table_style)
-      right_flowables.append(t_wp)
+      img_buf = io.BytesIO ()
+      fig.savefig ( img_buf, format = 'png', bbox_inches = 'tight', transparent = True )
+      img_buf.seek ( 0 )
+      chart_img_bytes = img_buf.read ()
+        
+    except :
+      chart_img_bytes = None
 
- 
-      # --- MASTER LAYOUT (2 KOLOMMEN) ---
-      master_data = [[left_flowables, "", right_flowables]]
-      master_table = Table(master_data, colWidths=[200, 25, 320])
-      master_table.setStyle(TableStyle([
-          ('VALIGN', (0,0), (-1,-1), 'TOP'),
-          ('LEFTPADDING', (0,0), (-1,-1), 0),
-          ('RIGHTPADDING', (0,0), (-1,-1), 0),
-          ('BOTTOMPADDING', (0,0), (-1,-1), 0),
-          ('TOPPADDING', (0,0), (-1,-1), 0),
+    # ************************************************************
+    # 3. Document Setup (A4 breedte = 595pt. Marges 25+25=50pt. Beschikbare breedte = 545pt)
+    # Linkerkolom (200) + Tussenruimte (25) + Rechterkolom (320) = exact 545pt.
+    # ************************************************************
+    buffer = io.BytesIO ()
+    doc    = SimpleDocTemplate ( buffer,           pagesize     = A4, 
+                                 rightMargin = 25, leftMargin   = 25, 
+                                 topMargin   = 25, bottomMargin = 25 )
+    story  = []
+    
+    # 4. Typografie & Stijlen
+    styles        = getSampleStyleSheet ()
+    title_style   = ParagraphStyle ( 'Title'  , parent=styles [ 'Heading1' ], fontSize = 18,                   spaceAfter = 5, textColor = colors.HexColor ( "#0f172a" ))
+    section_style = ParagraphStyle ( 'Section', parent=styles [ 'Heading2' ], fontSize = 11, spaceBefore =  8, spaceAfter = 4, textColor = colors.HexColor ( "#1e293b" ))
+    normal_style  = ParagraphStyle ( 'Normal' , parent=styles [ 'Normal'   ], fontSize =  9, leading     = 11,                 textColor = colors.HexColor ( "#334155" ))
+    
+    # Stijl voor tekst IN de tabellen (voorkomt tekst overlap bij lange zinnen)
+    table_body_style  = ParagraphStyle ( 'TableBody'      , parent = styles [ 'Normal' ], fontSize = 9, leading = 11, textColor = colors.HexColor ( "#1e293b" ))
+    table_body_center = ParagraphStyle  ('TableBodyCenter', parent = table_body_style, alignment = 1 ) # 1 = gecentreerd
+
+    # NIEUW: Stijl voor het tekstblok over de volle breedte aan het einde
+    footer_block_style = ParagraphStyle ('FooterBlock',
+      parent        = styles [ 'Normal' ],
+      fontSize      = 9,
+      leading       = 13,
+      textColor     = colors.HexColor ( "#1e293b" ),
+      backColor     = colors.HexColor ( "#f8fafc" ),  # Lichtgrijze achtergrond
+      borderColor   = colors.HexColor ( "#cbd5e1" ),  # Dunne rand
+      borderWidth   = 0.5,
+      borderPadding = 10,                             # Ruimte binnen het blok
+      spaceBefore   = 15,                             # Ruimte boven het blok
+      spaceAfter    = 10
+    )
+
+    # ************************************************************
+    # 1. LOGO & HEADER TOEVOEGEN
+    # ************************************************************
+    logo_pad = "logo.png" # Zorg dat dit logo in de root van je GitHub staat
+    
+    header_tekst = [
+      Paragraph ( f"FC Warmtepomp Calculator (v{Version})", title_style ),
+      Paragraph ( f"<b>EvaluatiePeriode:</b> {self.sl_jaren} jaar  |  <b>Gasprijs:</b> € {self.sl_gas_prijs:.2f}/m³  |  <b>Elektraprijs:</b> € {self.sl_elek_prijs:.2f}/kWh", normal_style)
+    ]
+
+    # Controleer of het logo bestaat (voorkomt crashes als het bestand ontbreekt)
+    if os.path.exists ( logo_pad ) :
+      # Logo breedte 100pt, hoogte automatisch schalen (pas aan naar wens)
+      logo_img = Image ( logo_pad, width=100, height=40 ) 
+      # Tabel met 2 kolommen: Titel (425pt) en Logo (120pt) = 545pt breed
+      header_tabel = Table ( [ [ header_tekst, logo_img ] ], colWidths = [ 425, 120 ] )
+      header_tabel.setStyle ( TableStyle ( [
+        ( 'VALIGN', ( 0, 0 ), ( -1, -1 ), 'MIDDLE' ),
+        ( 'ALIGN' , ( 1, 0 ), (  1 , 0 ), 'RIGHT'  ), # Logo rechts uitlijnen
       ]))
-      
-      story.append(master_table)
-      
-      
-      # =========================================================================
-      # 2. TEKSTBLOK OVER VOLLE BREEDTE AAN HET EINDE
-      # =========================================================================
-      story.append(Spacer(1, 10))
-      
-      conclusie_tekst = (
-          "<b>Disclaimer & Notitie:</b> Deze berekening is een schatting op basis van de door u "
-          "ingevoerde verbruiksgegevens en huidige energietarieven. Rendementen van warmtepompen (SCOP) "
-          "kunnen in de praktijk variëren afhankelijk van de isolatiewaarde van uw woning en het type "
-          "afgiftesysteem (bijv. vloerverwarming versus radiatoren). Er kunnen geen rechten aan deze "
-          "calculatie worden ontleend."
-      )
-      
-      # Omdat dit direct in de main story staat (buiten de kolommen), 
-      # neemt het automatisch de volledige breedte van 545pt in beslag.
-      story.append(Paragraph(conclusie_tekst, footer_block_style))
+      story.append ( header_tabel )
+    else:
+      # Fallback als logo niet wordt gevonden
+      story.append ( header_tekst [ 0 ] )
+      story.append ( header_tekst [ 1 ] )
 
+    story.append ( Spacer ( 1, 15 ))
 
-      
-      
-      # Bouw PDF document
-      doc.build(story)
-      buffer.seek(0)
-      return buffer
-      
+    # ************************************************************
+    # Standaard tabelstijl voor een strakke look
+    # ************************************************************
+    base_table_style = TableStyle ( [
+        ( 'BACKGROUND'    , (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
+        ( 'TEXTCOLOR'     , (0, 0), (-1, 0), colors.whitesmoke),
+        ( 'ALIGN'         , (0, 0), (-1, 0), 'LEFT'),
+        ( 'FONTNAME'      , (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ( 'FONTSIZE'      , (0, 0), (-1, 0), 9),
+        ( 'BOTTOMPADDING' , (0, 0), (-1, 0), 5),
+        ( 'TOPPADDING'    , (0, 0), (-1, 0), 5),
+        ( 'FONTNAME'      , (0, 1), (-1, -1), 'Helvetica'),
+        ( 'FONTSIZE'      , (0, 1), (-1, -1), 9),
+        ( 'VALIGN'        , (0, 0), (-1, -1), 'MIDDLE'),
+        ( 'ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9FA")]),
+        ( 'LINEBELOW'     , (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+    ])
+
+    # --- LINKS: VERBRUIK & VASTE KOSTEN & SLIDERS ---
+    left_flowables = []
+    
+    # ************************************************************
+    # 1. Energie Verbruik
+    # ************************************************************
+    left_flowables.append ( Paragraph ( "Energie Verbruik", section_style ))
+    verbruik_data = [[ "Energie Item", "Waarde" ]]
+    for k, v in pdf_verbruik.items () :
+      verbruik_data.append ( [Paragraph ( k, table_body_style ), Paragraph ( str ( v ), table_body_style ) ])
+    t_verbruik = Table ( verbruik_data, colWidths = [ 140, 50 ])
+    t_verbruik.setStyle ( base_table_style )
+    left_flowables.append ( t_verbruik )
+    left_flowables.append ( Spacer ( 1, 15 ) )
+
+    # ************************************************************
+    # 2. Vaste Kosten
+    # ************************************************************
+    left_flowables.append ( Paragraph("Vaste Kosten", section_style ))
+    vast_data = [[ "Kosten Item", "Waarde" ]]
+    for k, v in pdf_vast.items () :
+      vast_data.append ( [ Paragraph ( k        , table_body_style ), 
+                           Paragraph ( str ( v ), table_body_style ) ])
+    t_vast = Table ( vast_data, colWidths = [ 140, 50 ])
+    t_vast.setStyle ( base_table_style )
+    #t_vast.setStyle ( table_body_center )   # GEEFT FOUTMELDING
+    left_flowables.append ( t_vast )
+    left_flowables.append ( Spacer ( 1, 15 ))
+
+    # ************************************************************
+    # --- RECHTS: GRAFIEK, RESULTATEN & EIGENSCHAPPEN ---
+    # ************************************************************
+    right_flowables = []
+    
+    # ************************************************************
+    # Grafiek
+    # ************************************************************
+    if chart_img_bytes:
+      right_flowables.append ( Paragraph ( "Kosten Evaluatie Grafiek", section_style ))
+      #right_flowables.append ( Image ( io.BytesIO ( chart_img_bytes ), width=320, height=186 ))
+      right_flowables.append ( Image ( io.BytesIO ( chart_img_bytes ), width=350, height=186 ))
+      right_flowables.append ( Spacer ( 1, 10 ) )
+
+    # ************************************************************
+    # Gemiddelde Resultaten
+    # ************************************************************
+    right_flowables.append ( Paragraph ( "Gemiddelde Resultaten (Netto)", section_style ))
+    output_data = [
+      [ "Resultaat indicator", "CV", "WP1", "WP2", "WP3"],
+      [ "Kosten / Maand avg", f"€ {int(self.kosten_overzicht['CV']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP1']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP2']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP3']['Totaal']/self.sl_jaren/12)}"],
+      [ "Kosten / Jaar avg", f"€ {int(self.kosten_overzicht['CV']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP1']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP2']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP3']['Totaal']/self.sl_jaren)}"],
+      [ "Netto Totaal Evaluatie", f"€ {int(self.kosten_overzicht['CV']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP1']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP2']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP3']['Totaal'])}"]
+    ]
+    
+    # ************************************************************
+    # Omzetten naar Paragraphs voor automatische uitlijning en wrapping
+    # ************************************************************
+    formatted_output_data = []
+    for r_idx, row in enumerate ( output_data ) :
+      formatted_row = []
+      for c_idx, cell in enumerate ( row ) :
+        if r_idx == 0:
+          formatted_row.append ( cell ) # Headers blijven platte tekst voor de TableStyle
+        else:
+          # Allign iedere row, de volgende regel: col0=Left, andere columns=Center
+          #style = table_body_style if c_idx == 0 else table_body_center
+          style = table_body_style
+          formatted_row.append ( Paragraph ( cell, style ))
+      formatted_output_data.append ( formatted_row )
+
+    t_output = Table ( formatted_output_data, colWidths = [ 120, 55, 55, 55, 55 ] )
+    t_output.setStyle ( base_table_style )
+    right_flowables.append ( t_output )
+
+    right_flowables.append ( Spacer ( 1, 15 ))
+    
+    # ************************************************************
+    # Installatie Eigenschappen (pdf_wp)
+    # ************************************************************
+    right_flowables.append ( Paragraph ( "Installatie Eigenschappen", section_style ))
+    wp_data = [[ "Eigenschap", "CV", "WP1", "WP2", "WP3" ]]
+    
+    rijen = pdf_wp [ "Installatie" ]
+    for idx, rij in enumerate ( rijen ) :
+      wp_data.append ( [
+        Paragraph ( rij, table_body_style ), 
+        Paragraph ( str ( pdf_wp [ "CV"  ][idx]), table_body_style ), #table_body_center ), 
+        Paragraph ( str ( pdf_wp [ "WP1" ][idx]), table_body_style ), 
+        Paragraph ( str ( pdf_wp [ "WP2" ][idx]), table_body_style ), 
+        Paragraph ( str ( pdf_wp [ "WP3" ][idx]), table_body_style )
+      ])
+    
+    t_wp = Table ( wp_data, colWidths= [ 120, 55, 55, 55, 55 ])
+    t_wp.setStyle ( base_table_style )
+    right_flowables.append ( t_wp )
  
- 
+    # --- MASTER LAYOUT (2 KOLOMMEN) ---
+    master_data  =  [ [ left_flowables, "", right_flowables ] ]
+    master_table = Table ( master_data, colWidths = [ 180, 25, 350 ] )
+    master_table.setStyle ( TableStyle ( [
+        ( 'VALIGN'       , (0,0), (-1,-1), 'TOP' ),
+        ( 'LEFTPADDING'  , (0,0), (-1,-1), 0 ),
+        ( 'RIGHTPADDING' , (0,0), (-1,-1), 0 ),
+        ( 'BOTTOMPADDING', (0,0), (-1,-1), 0 ),
+        ( 'TOPPADDING'   , (0,0), (-1,-1), 0 ),
+    ]))
+    story.append(master_table)
+    
+    # ************************************************************
+    # 2. TEKSTBLOK OVER VOLLE BREEDTE AAN HET EINDE
+    # ************************************************************
+    story.append ( Spacer ( 1, 10 ) )
+    
+    conclusie_tekst = (
+      "<b>Disclaimer & Notitie:</b> Deze berekening is een schatting op basis van de door u "
+      "ingevoerde verbruiksgegevens en huidige energietarieven. Rendementen van warmtepompen (SCOP) "
+      "kunnen in de praktijk variëren afhankelijk van de isolatiewaarde van uw woning en het type "
+      "afgiftesysteem (bijv. vloerverwarming versus radiatoren). Er kunnen geen rechten aan deze "
+      "calculatie worden ontleend."
+    )
+    # Omdat dit direct in de main story staat (buiten de kolommen), 
+    # neemt het automatisch de volledige breedte van 545pt in beslag.
+    story.append ( Paragraph ( conclusie_tekst, footer_block_style ) )
+    
+    # Bouw PDF document
+    doc.build ( story )
+    buffer.seek ( 0 )
+    return buffer
+    
 # ****************************************************************************
 # ****************************************************************************
-def main():
+def main () :
   # Dashboard schermlay-out hersteld naar stabiele weergave
-  st.markdown("""
+  st.markdown ( """
     <style>
     .block-container {padding-top: 1rem; padding-bottom: 0rem;}
     h3 {margin-top: 0rem; margin-bottom: 0.5rem;}
     </style>
-  """, unsafe_allow_html=True)
+  """, unsafe_allow_html = True )
   
-  st.title("⚡ FC Warmtepomp Calculator (v%.1f)" % version)
+  st.title ( "⚡ FC Warmtepomp Calculator (v%.1f)" % Version )
   
-  model = EnergieModel()
-  Col_Left, Col_Right = st.columns([1, 1.8])
+  model = EnergieModel ()
+  Col_Left, Col_Right = st.columns ( [ 1, 1.8 ] )
   
   with Col_Left:
-    model.create_table_energie_verbruik()
-    model.create_sliders()
-    model.create_PV_Opwek()
-    model.create_table_vaste_kosten()
+    model.create_table_energie_verbruik ()
+    model.create_sliders ()
+    model.create_PV_Opwek ()
+    model.create_table_vaste_kosten ()
       
-  model.run_calculations()
+  model.run_calculations ()
     
-  with Col_Right:
+  with Col_Right :
     model.create_chart ()
     model.create_table_output ()
     model.create_table_installatie ()
 
     # FIX: Haal de benodigde dictionaries VEILIG op uit de state VOORDAT de achtergrond-thread start
-    state_verbruik = dict(st.session_state.init_verbruik)
-    state_vast = dict(st.session_state.init_vast)
-    state_wp = dict(st.session_state.init_wp)
+    state_verbruik = dict ( st.session_state.init_verbruik )
+    state_vast     = dict ( st.session_state.init_vast )
+    state_wp       = dict ( st.session_state.init_wp )
 
     # Maak de JSON data live aan voor de downloadknop
-    json_data_string = model.export_to_json()
+    json_data_string = model.export_to_json ()
 
     # Geef de veilige data mee via een argumentloze lambda naar de export_to_pdf
     col_json_0, col_json1, col_json2 = st.columns ( 3 )
@@ -743,43 +772,44 @@ def main():
        ,width     = "stretch"
     )
 
-
-
-
-    # --- JSON OPSLAAN & LADEN SECTIE ---
-    #st.subheader("💾 Model Data Beheer")
-    
-    
-    #col_json1, col_json2 = st.columns(2)
-    with col_json1:
-      st.download_button(
-        label="📤 Exporteer Data",
-        data=json_data_string,
-        file_name="warmtepomp_model_instellingen.json",
-        mime="application/json",
-        width="stretch"
+    with col_json1 :
+      st.download_button (
+        label     = "📤 Exporteer Data",
+        data      = json_data_string,
+        file_name = "warmtepomp_model_instellingen.json",
+        mime      = "application/json",
+        width     = "stretch"
       )
         
-    with col_json2:
+    with col_json2 :
       # Een compacte file uploader die alleen naar .json bestanden zoekt
-      geupload_bestand = st.file_uploader(
+      geupload_bestand = st.file_uploader (
         "Importeer Data (JSON)", 
-        type=["json"], 
-        width="stretch",
-        label_visibility= "collapsed" #"visible" 
+        type             = [ "json" ], 
+        width            = "stretch",
+        label_visibility = "collapsed" #"visible" 
       )
-      if geupload_bestand is not None:
-        model.import_from_json(geupload_bestand)
+      if geupload_bestand is not None :
+        model.import_from_json ( geupload_bestand )
 
   # nog wat tekst / toelichting
-  #st.title("⚡ FC Warmtepomp Calculator (v%.1f)" % version)
-  line  = "Op dit moment wordt nog niets gedaan met PV-panelen, Thuisaccu, Zonneboiler, E-Auto."
+  line  = ""
+  line += "Op dit moment wordt nog niets gedaan met PV-panelen, Thuisaccu, E-Auto."
   line += "<br>De eerst volgende stap is om PV-Panelen mee te nemen"
   line += ", zodat eigen verbruik stijgt en de kosten van een warmtepomp dalen."
   line += "<br>gelijktijdig wordt dan ook de thuisaccu meegenomen, omdat dat exact hetzelfde mechanisme is."
   line += "<br>Daarna zal rente worden meegenomen."
-  line += "<br>Zonneboiler is waarschijnlijk te moeilijk en ook minder zinvol, evenals E-Auto"
+  line += "<br>E-Auto is waarschijnlijk te moeilijk en ook minder zinvol"
+  line += "Free BSD license(c) 2026, Designed by Frans.Cremers@RadboudUMC.nl, created by Stef Mientki@gmail.com"
+
   st.html ( line )
+
+
+
+
+
+
+
 
 
 # ****************************************************************************
@@ -788,10 +818,22 @@ def main():
 # ****************************************************************************
 # ****************************************************************************
 if __name__ == "__main__":
-  #DF = Get_KNMI_Uur_QT ( 2025, Station = 375 )
-  #print ( DF )
-  #This_Is_The_End
+  
+  Tests = []
+  
+  if 1 in Tests :
+    Year = 2024
     
+    DF = Get_KNMI_Uur_QT ( Year, Station = 375 )
+    print ( DF.sum() )
+  
+    from Zon_History import KNMI_Get_QT_Year
+    DF2 = KNMI_Get_QT_Year ( Year, Station = "Volkel" )
+    print ( DF2.sum() )
+  
+    This_Is_The_End
+    
+  
   main()
        
 
