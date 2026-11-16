@@ -1,16 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Version = 1.2   # 10-10-2025     saved: St_Warmtepomp_27_v1.2.py
-  -
+self.Results    bevat de resulaten die worden afgebeeld in tabel onder grafiek
+
+BELANGRIJK:
+Vastrecht (VR) en EnergieBelastingTeruggave (EBT) worden pas bij het eindresultaat toegevoegd.
+Kosten in tussenberekeningen zijn daarom altijd zonder VR en EBT.
   
+Version = 1.6
+  - CV, WP1 en WP3 helemaal nageplozen
+  - Elektrakosten houden nu rekening met extra eigen gebruik van PV door WP
+
+Version = 1.5
+  - implementering van uurscan, PV en Accu
+  - print pdf problem via global variable opgelost
+  
+Version = 1.4   # 12-10-2025
+  - correct gebruik van session_state
+
+Version = 1.3   # 12-10-2025
+Version = 1.2   # 10-10-2025     saved: St_Warmtepomp_27_v1.2.py
 Version = 1.1   # 10-10-2026    saved: St_Warmtepomp_26_v1.1.py
   - Lay out, alle componenten aanwezig
   - getest op streamlit cloud
   
 Version = 0.9   # - DEEL 1 - Fix voor printen, tabel-zichtbaarheid en balk-nulpunt
 """
-Version = 1.3   # 10-10-2025
+Version = 1.6
 
 import os
 from   datetime          import datetime, timedelta
@@ -22,17 +38,20 @@ import requests
 # *****************************************************************************
 # MOET ANDERS
 # *****************************************************************************
-#from   GraadDagen_PVopbrengst import *
-from   GraadDagen_PVopbrengst import EnergieSoort
-from   Zon_History            import KNMI_Get_QT_Year
+from   model_optimization  import kWh_from_m3, Dict_prop, Calc_Energie
+from   Zon_History         import KNMI_Get_QT_Year
 # *****************************************************************************
 # *****************************************************************************
 
 
-
-
 # *****************************************************************************
 # *****************************************************************************
+
+Stations = "Volkel,Arcen,Horst,De Bilt,Eindhoven,Groningen,Schiphol,Vlissingen".split(',')
+Datum    = datetime.now().strftime("%d-%m-%Y")
+   
+
+
 # 1. INITIALISEER DE CONFIGURATIE EN DWING LICHT THEMA AF VOOR STABIELE PRINTS
 st.set_page_config (
   layout                = "wide", 
@@ -47,18 +66,16 @@ if "init_verbruik" not in st.session_state :
     "Gas [m3]"                   : 1200, 
     "Elektra Afname [kWh]"       : 1900, 
     "TerugLevering [kWh]"        : 1700,
-    "PV Opbrengst [kWh]"         : 2800, 
-    "Verbruik augustus [kWh]"    : 172, 
-    "Capaciteit ThuisAccu [kWh]" : 0,
-    "Elektrische Auto [kWh]"     : 0
+    "PV Opbrengst [kWh]"         : 2600, 
+    "Capaciteit ThuisAccu [kWh]" : 5,
   }
 
 if "init_vast" not in st.session_state :
   st.session_state.init_vast = {
     "Leen Rente [%]"                 : 5.2, 
     "Spaar Rente [%]"                : 2.1, 
-    "Vastrecht Elektra [€]"          : 456, 
-    "Vastrecht Gas [€]"              : 200, 
+    "Vastrecht Elektra [€]"          : 480, 
+    "Vastrecht Gas [€]"              : 270, 
     "Teruggave EnergieBelasting [€]" : 635
   }
 
@@ -72,12 +89,27 @@ if "init_wp" not in st.session_state :
        "SCOP (factor)", 
        "Aandeel Verwarming [%]" ],
     "CV" : [  2000, 100, 2024, 15, 1.0,   0 ],   
-    "WP1": [ 12000, 100, 2024, 15, 5.0, 100 ], 
-    "WP2": [  6000, 100, 2024, 15, 4.0,  80 ],  
-    "WP3": [  4500, 100, 2024, 15, 4.5,  60 ],  
+    "WP1": [ 12000, 100, 2024, 15, 4.0, 100 ], 
+    "WP2": [  6000, 100, 2024, 15, 4.0,  75 ],  
+    "WP3": [  4500, 100, 2024, 15, 4.0,  50 ],  
   }
 
-
+# ****************************************************************************
+# **************************************************************************** @st.cache_data
+def Print_Iets () :
+  print ( "Dit is een gecachte procedure" )
+  
+# ****************************************************************************
+# Berekent Cumulatieve rente
+# 5% (berekend vanaf jaar 1) over 10 jaar levbert dus 12.58
+# ****************************************************************************
+@st.cache_data
+def Cum_Rente ( Delta, N_Jaren ) :
+  if Delta == 0 : Factor = N_Jaren
+  else          : Factor = ( ( 1 + Delta ) ** N_Jaren - 1 ) / Delta
+  return Factor
+      
+  
 # ****************************************************************************
 # ****************************************************************************
 class EnergieModel :
@@ -105,12 +137,12 @@ class EnergieModel :
     sl_load = st.session_state.get ( "load_sliders", {} )
     
     with col_1 :
-      self.sl_elek_prijs  = st.slider ( "Elektra Prijs (ct)"             ,10, 50, int ( sl_load.get ( "elek_prijs" , 31 ))) / 100
-      self.sl_elek_delta  = st.slider ( "Elektra Jaarlijkse Stijging (%)", 0, 10, int ( sl_load.get ( "elek_delta" , 2  ))) / 100  
-      self.sl_terug_prijs = st.slider ( "Terug Prijs (ct)"               ,10, 50, int ( sl_load.get ( "terug_prijs", 30 ))) / 100
+      self.sl_elek_prijs  = st.slider ( "Elektra Prijs (ct)"             ,10, 50, int ( sl_load.get ( "elek_prijs" , 40 ))) / 100
+      self.sl_elek_delta  = st.slider ( "Elektra Jaarlijkse Stijging (%)", 0, 10, int ( sl_load.get ( "elek_delta" ,  5 ))) / 100  
+      self.sl_terug_prijs = st.slider ( "Terug Prijs (ct)"               ,10, 50, int ( sl_load.get ( "terug_prijs",  2 ))) / 100
     with col_2 :
-      self.sl_gas_prijs = st.slider ( "Gas Prijs (ct)"            , 50, 300, int ( sl_load.get ( "gas_prijs", 168 ))) / 100
-      self.sl_gas_delta = st.slider ( "Gas Jaarlijkse Stijging (%)", 0,  10, int ( sl_load.get ( "gas_delta",   3 ))) / 100      
+      self.sl_gas_prijs = st.slider ( "Gas Prijs (ct)"            , 50, 300, int ( sl_load.get ( "gas_prijs", 200 ))) / 100
+      self.sl_gas_delta = st.slider ( "Gas Jaarlijkse Stijging (%)", 0,  10, int ( sl_load.get ( "gas_delta",   5 ))) / 100      
       self.sl_jaren     = st.slider ( "EvaluatiePeriode (Jaren)"   , 1,  30, int ( sl_load.get ( "jaren"    ,  10 )))
 
 
@@ -128,17 +160,17 @@ class EnergieModel :
 
   # ************************************************************
   # ************************************************************
-  def get_value_wp ( self, rij, sys ) :
+  def get_value_wp ( self, rij, Sys ) :
     if "editor_wp"   in st.session_state and \
        "edited_rows" in st.session_state.editor_wp :
       edited = st.session_state.editor_wp [ "edited_rows" ]
       rijen = st.session_state.init_wp [ "Installatie" ]
       for idx, col_changes in edited.items() :
-        if rijen [ idx ] == rij and sys in col_changes :
-          return col_changes [ sys ]
+        if rijen [ idx ] == rij and Sys in col_changes :
+          return col_changes [ Sys ]
     rijen = st.session_state.init_wp [ "Installatie" ]
     row_idx = rijen.index ( rij )
-    return st.session_state.init_wp [ sys ][ row_idx ]
+    return st.session_state.init_wp [ Sys ][ row_idx ]
 
   # ************************************************************
   # ************************************************************
@@ -168,184 +200,133 @@ class EnergieModel :
 
   # ************************************************************
   # ************************************************************
+  def create_table_output ( self ) :
+    data_items = [ "VerwarmingsKosten per Maand", 
+                   "VerwarmingsKosten per Jaar", 
+                   "EnergieKosten (eerste jaar)",
+                   "Gas (per jaar)",
+                   "Afname (per jaar)",
+                   "Terug (per jaar)",
+                   "PV Eigen Verbruik" 
+                 ]
+    df_output = pd.DataFrame ( {
+      "Resultaat": data_items,
+      "CV":  [
+        "€ %i" % ( round ( self.Results [ "CV" ][ "Totaal" ] / self.sl_jaren / 12 ) ),
+        "€ %i" % ( self.Results [ "CV" ][ "Totaal" ] / self.sl_jaren ),
+        "€ %i" %   self.Results [ "CV" ][ "EnergieKosten" ],
+        self.Results [ "CV" ][ "Gas"            ],
+        self.Results [ "CV" ][ "Afname"         ],
+        self.Results [ "CV" ][ "Terug"          ],
+        self.Results [ "CV" ][ "Eigen_Verbruik" ],
+      ],
+      "WP1": [
+        "€ %i" % ( round ( self.Results [ "WP1" ][ "Totaal" ] / self.sl_jaren / 12 ) ),
+        "€ %i" % ( self.Results [ "WP1" ][ "Totaal" ] / self.sl_jaren ),
+        "€ %i" %   self.Results [ "WP1" ][ "EnergieKosten" ],
+        self.Results [ "WP1" ][ "Gas"            ],
+        self.Results [ "WP1" ][ "Afname"         ],
+        self.Results [ "WP1" ][ "Terug"          ],
+        self.Results [ "WP1" ][ "Eigen_Verbruik" ],
+      ],
+      "WP2": [
+        "€ %i" % ( round ( self.Results [ "WP2" ][ "Totaal" ] / self.sl_jaren / 12 ) ),
+        "€ %i" % ( self.Results [ "WP2" ][ "Totaal" ] / self.sl_jaren ),
+        "€ %i" %   self.Results [ "WP2" ][ "EnergieKosten" ],
+        self.Results [ "WP2" ][ "Gas"            ],
+        self.Results [ "WP2" ][ "Afname"         ],
+        self.Results [ "WP2" ][ "Terug"          ],
+        self.Results [ "WP2" ][ "Eigen_Verbruik" ],
+      ],
+      "WP3": [
+        "€ %i" % ( round ( self.Results [ "WP3" ][ "Totaal" ] / self.sl_jaren / 12 ) ), 
+        "€ %i" % ( self.Results [ "WP3" ][ "Totaal" ] / self.sl_jaren ),
+        "€ %i" %   self.Results [ "WP3" ][ "EnergieKosten" ],
+        self.Results [ "WP3" ][ "Gas"            ],
+        self.Results [ "WP3" ][ "Afname"         ],
+        self.Results [ "WP3" ][ "Terug"          ],
+        self.Results [ "WP3" ][ "Eigen_Verbruik" ],
+      ],
+    })    
+    # TextColumn voorkomt dat er rode accenten in de hoeken van een string cell komen
+    #kolom_instellingen = { col : st.column_config.NumberColumn ( alignment="center", width=100 ) \
+    kolom_instellingen = { col : st.column_config.TextColumn ( alignment="center", width=100 ) \
+                          for col in [ "CV", "WP1", "WP2", "WP3" ] }
+
+    kolom_instellingen["Resultaat"] = st.column_config.Column ( width = 160 )
+
+    # Om te voorkomen dat we foutmeldingen in de console ontstaan
+    df_output['CV']  = df_output['CV' ].astype(str)
+    df_output['WP1'] = df_output['WP1'].astype(str)
+    df_output['WP2'] = df_output['WP2'].astype(str)
+    df_output['WP3'] = df_output['WP3'].astype(str)
+
+    st.dataframe ( df_output
+                  ,width         = "stretch"
+                  #,use_container_width = True  # Vervang "stretch" (is verouderd) door True
+                  ,row_height    = 25
+                  ,hide_index    = True
+                  ,column_config = kolom_instellingen )
+
+
+  # ************************************************************
+  # ************************************************************
   def create_table_installatie ( self ) :
     df                 = pd.DataFrame ( st.session_state.init_wp ).set_index ( "Installatie" )
-    #kolom_instellingen = { col: st.column_config.NumberColumn ( alignment="center" ) \
-    #                       for col in [ "CV", "WP1", "WP2", "WP3" ]}
-    kolom_instellingen = { sys: st.column_config.NumberColumn ( alignment="center" ) \
-                           for sys in [ "CV", "WP1", "WP2", "WP3" ]}
-    st.data_editor ( df, 
-                     width         = "stretch", 
-                     num_rows      = "fixed", 
-                     disabled      = ["_index"],
-                     column_config = kolom_instellingen, 
-                     key           = "editor_wp" )
+    #kolom_instellingen = { Sys: st.column_config.NumberColumn ( alignment="center" ) \
+    #                       for Sys in [ "CV", "WP1", "WP2", "WP3" ]}
+    # 1. Zet de systeemkolommen op gecentreerd én op een vaste breedte van 100 pixels
+    kolom_instellingen = { Sys: st.column_config.NumberColumn ( alignment="center", width=100 ) \
+                           for Sys in [ "CV", "WP1", "WP2", "WP3" ]}
+    
+    # 2. Voeg de eerste kolom (de index-kolom) handmatig toe met een vaste breedte van 250 pixels
+    kolom_instellingen["Installatie"] = st.column_config.Column ( width = 180 )
+          
+    st.data_editor ( df 
+                    ,width         = "stretch"
+                    ,row_height    = 25
+                    ,num_rows      = "fixed"
+                    ,disabled      = ["_index"]
+                    ,column_config = kolom_instellingen
+                    ,key           = "editor_wp" )
     
   # ************************************************************
   # ************************************************************
   def create_PV_Opwek ( self ) :
-    # --- VOORBEELD HOE JE DIT TOEPAST ---
-    #st.title("☀️ Zon Wh")
+    # 1. Initialiseer de lijst éénmalig in de session_state als deze nog niet bestaat
+    if "knmi_stations_lijst" not in st.session_state :
+      st.session_state.knmi_stations_lijst = "Volkel,Arcen,Horst,De Bilt,Eindhoven,Groningen,Schiphol,Vlissingen".split(',')
+
+    # 2. Gebruik de lijst uit de session_state voor de selectbox
+    self.KNMI_Station = st.selectbox (
+        "Kies een KNMI Weerstation of type een nieuwe" 
+        ,st.session_state.knmi_stations_lijst
+        ,index              = 0
+        ,accept_new_options = True
+      )
     
-    #station_opties = {"De Bilt": 260, "Schiphol": 240, "Eindhoven": 370, "Groningen": 280, "Vlissingen": 310}
-    station_opties = { "Volkel"     : 375 
-                      ,"Arcen"      : 391  # mist historische data
-                      ,"Horst"      : 392  # mist historische data
-                      ,"De Bilt"    : 260
-                      ,"Schiphol"   : 240
-                      ,"Eindhoven"  : 370
-                      ,"Groningen"  : 280
-                      ,"Vlissingen" : 310 
-                     }
-    self.KNMI_Station = st.selectbox ( "Kies een KNMI Weerstation", list ( station_opties.keys() ))
-    KNMI_Get_QT_Year ( 2024, WeerStation = self.KNMI_Station )
+    # Print de onthouden lijst naar je terminal ter controle
+    print(st.session_state.knmi_stations_lijst)
     
-    #with st.spinner ( "KNMI data over 8760 uren wordt opgehaald..." ) :
-      #df_weer = download_knmi_uurgegevens_json(jaar=2025, station=station_opties[gekozen_station])
-      #df_weer = Get_KNMI_Uur_QT ( 2025, Station=station_opties [ self.KNMI_Station ] )
-      #KNMI_Get_QT_Year ( 2024, WeerStation = "Volkel" ) :
-    
-    st.space ( size = 5 ) #"medium" )  om niet met popup van table eronder in de knoop te komen
+    if self.KNMI_Station:
+      # 3. Controleer tegen de onthouden lijst in session_state
+      if self.KNMI_Station not in st.session_state.knmi_stations_lijst:
+        st.session_state.knmi_stations_lijst.append(self.KNMI_Station)
+        st.rerun() # Deze herlaadbeurt stopt nu wél de loop, omdat het station nu wél onthouden is!
 
-    #st.success(f"Succesvol {len(df_weer)} uren aan data ingeladen!")
-    #st.dataframe(df_weer.head(10), width="stretch")
+      # 4. Data ophalen en tonen
+      KNMI_Get_QT_Year ( 2024, WeerStation = self.KNMI_Station )
+      st.write(f"Geselecteerd station: **{self.KNMI_Station}**")
 
-  # ************************************************************
-  # ************************************************************
-  def run_calculations ( self ) :
-    gas_verbruik        = self.get_value_verbruik ( "Gas [m3]" )
-    vastrecht_gas       = self.get_value_vast     ( "Vastrecht Gas [€]" )
-    teruggave_belasting = self.get_value_vast     ( "Teruggave EnergieBelasting [€]" )
-    aanschaf_prijs_cv   = self.get_value_wp       ( "Aanschaf Prijs [€]", "CV" )
-    levensduur_cv       = self.get_value_wp       ( "Levensduur [jaren]", "CV" )
-    onderhoud_cv        = self.get_value_wp       ( "OnderhoudsKosten [€]", "CV" )
-    
-    self.kosten_overzicht = {}
-    systemen = [ "CV", "WP1", "WP2", "WP3" ]
-    
-    for sys in systemen :
-      aanschaf_prijs = self.get_value_wp ( "Aanschaf Prijs [€]", sys )
-      levensduur     = self.get_value_wp ( "Levensduur [jaren]", sys )
-      onderhoud      = self.get_value_wp ( "OnderhoudsKosten [€]", sys )
-      scop           = self.get_value_wp ( "SCOP (factor)", sys )
-      aandeel        = self.get_value_wp ( "Aandeel Verwarming [%]", sys ) / 100 
-      
-      # Bruto aanschafkosten (altijd positief vanaf 0)
-      aanschaf_jaarlijks = aanschaf_prijs / levensduur
-      if aandeel < 1.0 and sys != "CV":
-        aanschaf_jaarlijks += (aanschaf_prijs_cv / levensduur_cv)
-      totaal_aanschaf = aanschaf_jaarlijks * self.sl_jaren
-      
-      # Bruto vaste kosten (altijd positief vanaf 0)
-      vaste_kosten_jaarlijks = onderhoud
-      if aandeel < 1.0 and sys != "CV":
-        vaste_kosten_jaarlijks += (onderhoud_cv + vastrecht_gas)
-      elif sys == "CV":
-        vaste_kosten_jaarlijks += vastrecht_gas
-      totaal_vaste_kosten = vaste_kosten_jaarlijks * self.sl_jaren
-      
-      # Bruto verbruikskosten
-      totaal_verbruik = 0.0
-      for j in range(self.sl_jaren):
-        actuele_gasprijs  = self.sl_gas_prijs  * (( 1 + self.sl_gas_delta  ) ** j)
-        actuele_elekprijs = self.sl_elek_prijs * (( 1 + self.sl_elek_delta ) ** j)
-        
-        gas_deel = (1 - aandeel) * gas_verbruik * actuele_gasprijs
-        if scop > 0:
-          elek_deel = aandeel * gas_verbruik * 10 * actuele_elekprijs / scop
-        else:
-          elek_deel = 0
-        totaal_verbruik += (gas_deel + elek_deel)
-      
-      # Bereken de totale korting van de Energiebelasting over de hele periode
-      totaal_korting_belasting = teruggave_belasting * self.sl_jaren
-      
-      # Eindtotaal = Bruto som minus de belastingteruggave
-      bruto_totaal = totaal_aanschaf + totaal_vaste_kosten + totaal_verbruik
-      netto_totaal = bruto_totaal - totaal_korting_belasting
-      netto_totaal = bruto_totaal
-      
-      self.kosten_overzicht[sys] = {
-        "Aanschaf"          : totaal_aanschaf,
-        "Vaste Kosten"      : totaal_vaste_kosten,
-        "Verbruik"          : totaal_verbruik,
-        "Korting Belasting" : totaal_korting_belasting,
-        "Totaal"            : netto_totaal
-      }
-      
-      self.Calc_PV ()
-
-      #print ( "Gas=%i  GasDeel=%i   EDeel=%i" % ( 
-      #  gas_verbruik, gas_deel, elek_deel ) )
-      
-    #print ( "Calculations ran" )
-      
-
-
-  # ************************************************************
-  # ************************************************************
-  def Calc_PV ( self ) : 
-    Year          = 2024
-    kWh_per_Wp    = 0.94
-    #E_Base_kWh_pm = 172   # Stef augustus-2024
-
-    #Gas_m3        = self.get_value_verbruik ( "Gas [m3]" )
-    PV_kWh        = self.get_value_verbruik ( "PV Opbrengst [kWh]" )
-    E_Afname_kWh  = self.get_value_verbruik ( "Elektra Afname [kWh]" )
-    E_Terug_kWh   = self.get_value_verbruik ( "TerugLevering [kWh]" )
-    E_Base_kWh_pm = self.get_value_verbruik ( "Verbruik augustus [kWh]" )
-    
-
-    Elektra = EnergieSoort ( "Elektra", E_Afname_kWh, E_Terug_kWh, PV_kWh=PV_kWh,
-                            kWh_per_Wp = kWh_per_Wp )
-    Elektra.Set_Base_pm ( E_Base_kWh_pm )           
-    Elektra.Add_KNMI_WP_Accu ( Year, Warmtepomp_kWh = 0   , Do_Print=True )
-    Elektra.Add_KNMI_WP_Accu ( Year, Warmtepomp_kWh = 1000, Do_Print=True )
-  
-
-
-
-  # ************************************************************
-  # ************************************************************
-  def create_table_output ( self ) :
-    data_items = [ "Kosten per Maand avg [€]", 
-                   "Kosten per Jaar avg [€]", 
-                   "Kosten over EvaluatiePeriode [€]" ]
-    df_output = pd.DataFrame ( {
-      "Resultaat": data_items,
-      "CV":  [
-        int(self.kosten_overzicht["CV"]["Totaal"] / self.sl_jaren / 12),
-        int(self.kosten_overzicht["CV"]["Totaal"] / self.sl_jaren),
-        int(self.kosten_overzicht["CV"]["Totaal"])
-      ],
-      "WP1": [
-        int(self.kosten_overzicht["WP1"]["Totaal"] / self.sl_jaren / 12),
-        int(self.kosten_overzicht["WP1"]["Totaal"] / self.sl_jaren),
-        int(self.kosten_overzicht["WP1"]["Totaal"])
-      ],
-      "WP2": [
-        int(self.kosten_overzicht["WP2"]["Totaal"] / self.sl_jaren / 12),
-        int(self.kosten_overzicht["WP2"]["Totaal"] / self.sl_jaren),
-        int(self.kosten_overzicht["WP2"]["Totaal"])
-      ],
-      "WP3": [
-        int(self.kosten_overzicht["WP3"]["Totaal"] / self.sl_jaren / 12),
-        int(self.kosten_overzicht["WP3"]["Totaal"] / self.sl_jaren),
-        int(self.kosten_overzicht["WP3"]["Totaal"])
-      ],
-    })    
-    kolom_instellingen = { col : st.column_config.NumberColumn ( alignment="center" ) \
-                          for col in [ "CV", "WP1", "WP2", "WP3" ] }
-    st.dataframe ( df_output, width = "stretch", hide_index = True, column_config = kolom_instellingen )
 
   # ************************************************************
   # ************************************************************
   def create_chart ( self ) :
     chart_rows = []
-    for sys, posten in self.kosten_overzicht.items () :
+    for Sys, posten in self.Results.items () :
       for kosten_type in [ "Aanschaf", "Vaste Kosten", "Verbruik" ] :
         chart_rows.append ( {
-          "Installatie" : sys,
+          "Installatie" : Sys,
           "Type Kosten" : kosten_type,
           "Bedrag (€)"  : posten [ kosten_type ]
         } )
@@ -369,7 +350,8 @@ class EnergieModel :
     fig.update_yaxes ( title = None, showgrid = True, gridcolor = "#e2e8f0", tickfont = dict ( color ="#000000" ) )
     
     #st.plotly_chart ( fig, 
-    #                  use_container_width = True, 
+    #                  width = "stretch",
+    #                  #use_container_width = True, 
     #                  config = {"displayModeBar": False }
     #                )
     
@@ -392,6 +374,197 @@ class EnergieModel :
     )
 
   
+
+    
+  # ************************************************************
+  # ************************************************************
+  def run_calculations ( self ) :
+    Gas_Verbruik        = self.get_value_verbruik ( "Gas [m3]" )
+    Gas_Vastrecht       = self.get_value_vast     ( "Vastrecht Gas [€]" )
+    Teruggave_Belasting = self.get_value_vast     ( "Teruggave EnergieBelasting [€]" )
+    Kosten_Aanschaf_CV  = self.get_value_wp       ( "Aanschaf Prijs [€]", "CV" )
+    Levensduur_CV       = self.get_value_wp       ( "Levensduur [jaren]", "CV" )
+    Onderhoud_CV        = self.get_value_wp       ( "OnderhoudsKosten [€]", "CV" )
+    
+    Elektra_Vastrecht   = self.get_value_vast     ( "Vastrecht Elektra [€]" )
+    Elektra_Afname      = self.get_value_verbruik ( "Elektra Afname [kWh]" )
+    Elektra_Terug       = self.get_value_verbruik ( "TerugLevering [kWh]" )
+    PV_Opbrengst        = self.get_value_verbruik ( "PV Opbrengst [kWh]" )
+    Accu_kWh            = self.get_value_verbruik ( "Capaciteit ThuisAccu [kWh]" )
+    
+    # *****************************************
+    Energie_Case = Dict_prop ()
+    # *****************************************
+    Energie_Case.Year                 = 2024                # 2024
+    
+    Energie_Case.Afname_kWh_pj        = Elektra_Afname      # 1900 kWh
+    Energie_Case.Terug_kWh_pj         = Elektra_Terug       # 1700 kWh
+    
+    Energie_Case.PV_kWh_pj            = PV_Opbrengst        # 2600 kWh
+    Energie_Case.PV_kWh_Extra_pj      = 0                   #    0 kWh
+    
+    #Energie_Case.WP_Hybride           = Aandeel_Verw        # 0=CV_ketel, 1=Full_Electric
+    #Energie_Case.WP_SCOP              = SCOP                # 4.0
+    Energie_Case.WP_Slim              = False               # False
+    
+    Energie_Case.Accu_kWh             = Accu_kWh            # 5.0 kWh
+    Energie_Case.Accu_RTE             = 0.92 ** 2           # 0.85
+    Energie_Case.Accu_max_Laad_kW     = 2.5                 # 2.5 kW
+    Energie_Case.Accu_max_Ontlaad_kW  = 0.8                 # 0.8 kW
+    Energie_Case.Accu_min_SOC         = 12                  # 12%
+    
+    Energie_Case.Gas_m3_pj            = Gas_Verbruik        # 1200 m3
+    
+    Energie_Case.Elektra_Vastrecht_pj = Elektra_Vastrecht                 # € 490 = Leverancier + Netkosten
+    Energie_Case.Gas_Vastrecht_pj     = Gas_Vastrecht       # € 270 = Leverancier + Netkosten
+    Energie_Case.Elektra_Prijs        = self.sl_elek_prijs  # € 0.40 all in prijs      per kWh
+    Energie_Case.Terug_Prijs          = self.sl_terug_prijs # € 0.02 all in vergoeding per kWh
+    Energie_Case.Gas_Prijs            = self.sl_gas_prijs   # € 2.00 per m3
+
+    # ************************************************************
+    # ************************************************************
+    self.Results = {}
+    CL      = ''   # Controle regel die een hele hoop kan printen    
+    Systems = [ "CV", "WP1", "WP2", "WP3" ]
+    for Sys in Systems :
+      Aanschaf_sys   = self.get_value_wp ( "Aanschaf Prijs [€]"    , Sys )
+      Levensduur     = self.get_value_wp ( "Levensduur [jaren]"    , Sys )
+      Onderhoud_sys  = self.get_value_wp ( "OnderhoudsKosten [€]"  , Sys )
+      SCOP           = self.get_value_wp ( "SCOP (factor)"         , Sys )
+      Aandeel_Verw   = self.get_value_wp ( "Aandeel Verwarming [%]", Sys ) / 100 
+      
+      # *************************
+      # Aanschaf Kosten
+      # *************************
+      Kosten_Aanschaf_pj = Aanschaf_sys / Levensduur
+      if Aandeel_Verw < 1.0 and Sys != "CV":
+        Kosten_Aanschaf_pj += ( Kosten_Aanschaf_CV / Levensduur_CV )
+      Kosten_Aanschaf = Kosten_Aanschaf_pj * self.sl_jaren
+      
+      # *************************
+      # Vaste Kosten
+      # *************************
+      Kosten_Vast_pj = Onderhoud_sys
+      if Aandeel_Verw < 1.0 and Sys != "CV":
+        Kosten_Vast_pj += ( Onderhoud_CV + Gas_Vastrecht )
+      elif Sys == "CV":
+        Kosten_Vast_pj += Gas_Vastrecht
+      Kosten_Vast = Kosten_Vast_pj * self.sl_jaren
+
+      # OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+      #          MODEL OPTIMIZATION
+      # OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+      Energie_Case.WP_Hybride       = Aandeel_Verw        # 0=CV_ketel, 1=Full_Electric
+      Energie_Case.WP_SCOP          = SCOP                # 4.0
+      Afname_kWh, Terug_kWh, Gas_m3 = Calc_Energie ( Energie_Case, Do_Print = False ) 
+      # OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+      # OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
+
+      # *************************
+      # Verbruikskosten, doorloop alle jaren, want prijzen stijgen
+      # *************************
+      Factor_G = Cum_Rente ( self.sl_gas_delta , self.sl_jaren )
+      Factor_E = Cum_Rente ( self.sl_elek_delta, self.sl_jaren )
+
+      Kosten_Gas_Verwarming     = Factor_G * ( 1 - Aandeel_Verw ) * Gas_Verbruik               * self.sl_gas_prijs
+      Kosten_Elektra_Verwarming = Factor_E *  Aandeel_Verw        * Gas_Verbruik * kWh_from_m3 * self.sl_elek_prijs / SCOP
+      
+
+      # *************************
+      # Bewaar de CV situatie, want dan kun je verschillen berekenen
+      # *************************
+      if Sys == "CV" :
+        #Energie_Case_CV      = Energie_Case.copy ()
+        #Afname_kWh_CV        = Afname_kWh
+        #Terug_kWh_CV         = Terug_kWh
+        Kosten_Verbruik_Flex = Kosten_Gas_Verwarming + Kosten_Elektra_Verwarming
+        
+        # **********************
+        # Hier vastleggen wat de kosten voor elektra zijn
+        # om bij de andere systemen af te trekken
+        # **********************
+        Kosten_Verbruik_Flex_CV  = Factor_E * Afname_kWh * self.sl_elek_prijs
+        Kosten_Verbruik_Flex_CV -= Factor_E * Terug_kWh  * self.sl_terug_prijs
+        
+      else :
+        Kosten_Elektra_Totaal  = Factor_E * Afname_kWh * self.sl_elek_prijs
+        Kosten_Elektra_Totaal -= Factor_E * Terug_kWh  * self.sl_terug_prijs
+
+        Kosten_Verbruik_Flex   = Kosten_Elektra_Totaal - Kosten_Verbruik_Flex_CV
+        Kosten_Verbruik_Flex  += Kosten_Gas_Verwarming
+        #CL += '\n\nnot SYS: %i   %i   %i' % ( Afname_kWh, Kosten_Elektra_Totaal, Kosten_Verbruik_Flex_CV )
+      
+      
+      #CL += '\n  Afname=%i    Flex_CV=€%i' % ( Afname_kWh, Kosten_Verbruik_Flex_CV )
+      
+      
+      # *************************************************************
+      # Bereken tiotalen en berg deze op
+      # *************************************************************
+      bruto_totaal = Kosten_Aanschaf + Kosten_Vast + Kosten_Verbruik_Flex
+
+      Afname_Kosten = Elektra_Vastrecht + Afname_kWh * self.sl_elek_prijs
+      Terug_Kosten  =                   - Terug_kWh  * self.sl_terug_prijs
+      Gas_Kosten    = Gas_Vastrecht     + Gas_m3     * self.sl_gas_prijs
+      if Gas_m3 == 0 : Gas_Kosten = 0
+      Kosten = Afname_Kosten + Terug_Kosten + Gas_Kosten - Teruggave_Belasting
+
+      self.Results [ Sys ] = {
+        "Totaal"            : bruto_totaal,
+
+        "EnergieKosten"     : Kosten,
+
+        "Gas"               : "%i m3  |  €%i"  % ( round(Gas_m3    ), round(Gas_Kosten    )),
+        "Afname"            : "%i kWh  |  €%i" % ( round(Afname_kWh), round(Afname_Kosten )),
+        "Terug"             : "%i kWh  |  €%i" % ( round(Terug_kWh ), round(Terug_Kosten  )),
+ 
+        "Eigen_Verbruik"    : "%i %%" % round ( Energie_Case.Eigen_Verbruik ),
+        
+        "Aanschaf"          : Kosten_Aanschaf,
+        "Vaste Kosten"      : Kosten_Vast,
+        "Verbruik"          : Kosten_Verbruik_Flex,
+      }
+
+      # *****************************************************************
+      # *****************************************************************
+      Verbruik     = Afname_kWh + PV_Opbrengst - Terug_kWh 
+      Euro_per_kWh = ( Afname_kWh * self.sl_elek_prijs + Terug_Kosten ) \
+                    / ( Afname_kWh + Energie_Case.PV_kWh_pj - Terug_kWh )
+
+      CL += '\n'
+      CL += '\nAanschaf = €%i' % Kosten_Aanschaf
+      CL += '\nVast     = €%i' % Kosten_Vast
+      CL += '\nFlex_Sys = €%i' % Kosten_Verbruik_Flex
+      #CL += '\nAfname   =  %i kWh' % Afname_kWh
+      #CL += '\nTerug    =  %i kWh' % Terug_kWh
+      #CL += '\nVerbruikE=  %i kWh' % Verbruik
+      #CL += '\nGas      =  %i m3' % Gas_m3
+      #CL += '\nGasKosten= €%i' % Gas_Kosten
+      CL += '\nFlex CV  = €%i' % Kosten_Verbruik_Flex_CV
+     
+      CL += '\nAccu= %i    Hybr= %0.2f     SCOP= %.1f' % (
+        Accu_kWh, Aandeel_Verw, SCOP )
+      CL += '\nCV: Verbruik A+PV-T= %i kWh    Afname= %i kWh    PV= %i kWh    Terug= %i kWh' % (
+        Verbruik, Afname_kWh, PV_Opbrengst ,Terug_kWh )
+      CL += '\nPrijs per kWh= €%0.2f' % ( Euro_per_kWh )
+
+      if Sys == "CV" :
+        Verbruik_CV = Verbruik
+      else :
+        Verbruik_WP = Verbruik - Verbruik_CV
+        CL += '\n%s Kosten WP verbruik= %i' % ( Sys, Verbruik_WP * Euro_per_kWh )
+
+      CL += '\n================'
+      CL += '\nKosten_Gas      = %i' % Kosten_Gas_Verwarming
+      #CL += '\nKosten_Elektra  = %i' % Kosten_Elektra_Verwarming
+      CL += '\nKosten_Aanschaf = %i' % Kosten_Aanschaf
+      CL += '\nKosten_Vast     = %i' % Kosten_Vast
+      CL += '\nKosten_Verbruik = %i' % Kosten_Verbruik_Flex
+      CL += '\nStookgrens      = %.1f °C' % Energie_Case.StookGrens
+
+    print ( CL )
+
+
   # ************************************************************
   # ************************************************************
   def export_to_json ( self ) :
@@ -405,8 +578,8 @@ class EnergieModel :
                  for k in st.session_state.init_vast.keys () }
     
     live_wp = { "Installatie" : st.session_state.init_wp [ "Installatie" ] }
-    for sys in [ "CV", "WP1", "WP2", "WP3" ] :
-      live_wp [ sys ] = [ self.get_value_wp ( rij, sys ) \
+    for Sys in [ "CV", "WP1", "WP2", "WP3" ] :
+      live_wp [ Sys ] = [ self.get_value_wp ( rij, Sys ) \
                          for rij in st.session_state.init_wp [ "Installatie" ] ]
 
     # Voeg alles samen in één groot instellingen-pakket
@@ -545,7 +718,7 @@ class EnergieModel :
     logo_pad = "logo.png" # Zorg dat dit logo in de root van je GitHub staat
     
     header_tekst = [
-      Paragraph ( f"FC Warmtepomp Calculator (v{Version})", title_style ),
+      Paragraph ( "FC Warmtepomp Calculator (v%.1f)  %s" % ( Version, Datum ), title_style ),
       Paragraph ( f"<b>EvaluatiePeriode:</b> {self.sl_jaren} jaar  |  <b>Gasprijs:</b> € {self.sl_gas_prijs:.2f}/m³  |  <b>Elektraprijs:</b> € {self.sl_elek_prijs:.2f}/kWh", normal_style)
     ]
 
@@ -634,9 +807,9 @@ class EnergieModel :
     right_flowables.append ( Paragraph ( "Gemiddelde Resultaten (Netto)", section_style ))
     output_data = [
       [ "Resultaat indicator", "CV", "WP1", "WP2", "WP3"],
-      [ "Kosten / Maand avg", f"€ {int(self.kosten_overzicht['CV']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP1']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP2']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.kosten_overzicht['WP3']['Totaal']/self.sl_jaren/12)}"],
-      [ "Kosten / Jaar avg", f"€ {int(self.kosten_overzicht['CV']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP1']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP2']['Totaal']/self.sl_jaren)}", f"€ {int(self.kosten_overzicht['WP3']['Totaal']/self.sl_jaren)}"],
-      [ "Netto Totaal Evaluatie", f"€ {int(self.kosten_overzicht['CV']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP1']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP2']['Totaal'])}", f"€ {int(self.kosten_overzicht['WP3']['Totaal'])}"]
+      [ "Kosten / Maand avg", f"€ {int(self.Results['CV']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.Results['WP1']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.Results['WP2']['Totaal']/self.sl_jaren/12)}", f"€ {int(self.Results['WP3']['Totaal']/self.sl_jaren/12)}"],
+      [ "Kosten / Jaar avg", f"€ {int(self.Results['CV']['Totaal']/self.sl_jaren)}", f"€ {int(self.Results['WP1']['Totaal']/self.sl_jaren)}", f"€ {int(self.Results['WP2']['Totaal']/self.sl_jaren)}", f"€ {int(self.Results['WP3']['Totaal']/self.sl_jaren)}"],
+      [ "Netto Totaal Evaluatie", f"€ {int(self.Results['CV']['Totaal'])}", f"€ {int(self.Results['WP1']['Totaal'])}", f"€ {int(self.Results['WP2']['Totaal'])}", f"€ {int(self.Results['WP3']['Totaal'])}"]
     ]
     
     # ************************************************************
@@ -713,10 +886,11 @@ class EnergieModel :
     doc.build ( story )
     buffer.seek ( 0 )
     return buffer
-    
+  
 # ****************************************************************************
 # ****************************************************************************
-def main () :
+def main () :        
+
   # Dashboard schermlay-out hersteld naar stabiele weergave
   st.markdown ( """
     <style>
@@ -725,23 +899,52 @@ def main () :
     </style>
   """, unsafe_allow_html = True )
   
-  st.title ( "⚡ FC Warmtepomp Calculator (v%.1f)" % Version )
+  st.title ( "⚡ FC Warmtepomp Calculator (v%.1f)  %s" % ( Version, Datum ) )
   
-  model = EnergieModel ()
+  # **************************************************
+  # Model in session_state
+  # **************************************************
+  #model = EnergieModel ()
+  # Initialiseer de klasse EENMALIG per unieke gebruiker in zijn eigen session_state
+  if "model" not in st.session_state:
+    st.session_state.model = EnergieModel()
+  # Roep vanaf nu alle functies aan via het session_state object
+  #st.session_state.model.create_sliders()
+  
+  # Als je ergens anders in je code (buiten de class) de prijs nodig hebt, 
+  # lees je die zo uit:
+  # prijs = st.session_state.model.sl_elek_prijs
+  # **************************************************
+  # **************************************************
+  
   Col_Left, Col_Right = st.columns ( [ 1, 1.8 ] )
   
   with Col_Left:
-    model.create_table_energie_verbruik ()
-    model.create_sliders ()
-    model.create_PV_Opwek ()
-    model.create_table_vaste_kosten ()
+    st.session_state.model.create_table_energie_verbruik ()
+    st.session_state.model.create_sliders ()
+    st.session_state.model.create_PV_Opwek ()
+    st.session_state.model.create_table_vaste_kosten ()
       
-  model.run_calculations ()
+  #********************************************************************
+  #********************************************************************
+  st.session_state.model.run_calculations ()
+  #********************************************************************
+  #********************************************************************
     
   with Col_Right :
-    model.create_chart ()
-    model.create_table_output ()
-    model.create_table_installatie ()
+    st.session_state.model.create_chart ()
+    
+    # *************************************************************
+    # Het werken met een key werkt veel beter 
+    # dan het resultaat in ee variable st.session_state.Incl_Elektra op te slaan
+    # *************************************************************
+    st.toggle ( "Dit knopje heeft nog geen betekenis"
+      ,help = "Kosten Inclusief alle Elektra, anders enkel verwarmingskosten, vaste Elektra kosten worden nooit meegenomen"
+      ,key  ="Incl_Elektra"
+      )
+
+    st.session_state.model.create_table_output ()
+    st.session_state.model.create_table_installatie ()
 
     # FIX: Haal de benodigde dictionaries VEILIG op uit de state VOORDAT de achtergrond-thread start
     state_verbruik = dict ( st.session_state.init_verbruik )
@@ -749,21 +952,31 @@ def main () :
     state_wp       = dict ( st.session_state.init_wp )
 
     # Maak de JSON data live aan voor de downloadknop
-    json_data_string = model.export_to_json ()
+    json_data_string = st.session_state.model.export_to_json ()
 
     # Geef de veilige data mee via een argumentloze lambda naar de export_to_pdf
     col_json_0, col_json1, col_json2 = st.columns ( 3 )
     #col_json_0, col_json1, col_json2 = st.columns ( [1,1,2] )
 
+    # *************************************************************
+    # We moeten ook de klasse-instantie zelf (het model) loskoppelen van de 
+    # st.session_state voordat we de lambda-knop inladen. 
+    # Door de variabele direct aan een lokale Python-variabele Safe_Model 
+    # toe te wijzen in je hoofdprogramma, 
+    # kan de achtergrond-thread er direct bij zonder de state te hoeven raadplegen.
+    # *************************************************************
+    Safe_Model = st.session_state.model
     with col_json_0 :
       st.download_button ( 
         label     = "📥 PDF Rapport",
-        #data      = lambda: model.export_to_pdf(state_verbruik, state_vast, state_wp)
+        #data      = lambda: st.session_state.model.export_to_pdf(state_verbruik, state_vast, state_wp)
         # Verander dit bij de st.download_button aanroep:
-        data = lambda: model.export_to_pdf(state_verbruik, 
+        #data = lambda: st.session_state.model.export_to_pdf ( state_verbruik, 
+        data = lambda: Safe_Model.export_to_pdf ( state_verbruik, 
                                            state_vast, 
                                            state_wp, 
-                                           model.df_grafiek_laatste )
+                                           #st.session_state.model.df_grafiek_laatste )
+                                           Safe_Model.df_grafiek_laatste )
                                            #st.session_state.df_grafiek_laatste)
         # (Of als de dataframe buiten session_state leeft, vul hier de variabele in die je voor het scherm gebruikt, bijv: self.df_grafiek_laatste)
        ,file_name = "Warmtepomp_Berekening_Rapport.pdf"
@@ -790,27 +1003,32 @@ def main () :
         label_visibility = "collapsed" #"visible" 
       )
       if geupload_bestand is not None :
-        model.import_from_json ( geupload_bestand )
+        st.session_state.model.import_from_json ( geupload_bestand )
+
+  #********************************************************************
+  #********************************************************************
+  # DIT MAG NIET HIER STAAN, 
+  # WANT DE self.Results MOET ER AL ZIJN
+  #st.session_state.model.run_calculations ()
+  #********************************************************************
+  #********************************************************************
 
   # nog wat tekst / toelichting
-  line  = ""
-  line += "Op dit moment wordt nog niets gedaan met PV-panelen, Thuisaccu, E-Auto."
-  line += "<br>De eerst volgende stap is om PV-Panelen mee te nemen"
-  line += ", zodat eigen verbruik stijgt en de kosten van een warmtepomp dalen."
-  line += "<br>gelijktijdig wordt dan ook de thuisaccu meegenomen, omdat dat exact hetzelfde mechanisme is."
-  line += "<br>Daarna zal rente worden meegenomen."
-  line += "<br>E-Auto is waarschijnlijk te moeilijk en ook minder zinvol"
-  line += "Free BSD license(c) 2026, Designed by Frans.Cremers@RadboudUMC.nl, created by Stef Mientki@gmail.com"
-
+  line  = ''
+  line += 'Overweeg een lening met goede voorwaarden en tegen lage rente (zelfs 0% voor lage inkomens) <a href="https://www.warmtefonds.nl/" target="a">Warmtefonds</a>. '
+  line += '<br>Free BSD license(c) 2026, designed by <a href="mailto:Frans.Cremers@RadboudUMC.nl">Frans Cremers</a>'
+  line += ', created by <a href="mailto:Stef.Mientki@gmail.com">Stef Mientki</a>'
+  
+  line += '<br>Verwarmingskosten per jaar/maand'
+  line += ', Gas : Vastrecht + Verbruikskosten'
+  line += ', Elektra: Verbruikskosten'
+  line += '<br>Dit zijn steeds de gemiddelde kosten over 1 jaar (dus het eerste jaar zijn die kosten lager)'
+  line += ', zie verder <a href="https://stef-aap.github.io/EnergieContract/">Help Info</a>'
+  
+  line += '<br><br>Rente, Weerstation worden nog niet meegenomen.'
+  line += '<br>rapport moet nog gecontroleerd worden.'
+  line += ' Import tolt rond.'
   st.html ( line )
-
-
-
-
-
-
-
-
 
 # ****************************************************************************
 # ****************************************************************************
